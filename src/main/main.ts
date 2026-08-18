@@ -43,7 +43,7 @@ import { isEncryptionAvailable } from './secrets';
 import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/collection';
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
-import { AiTask, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
+import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
 import { ImportAnalysis, ImportPlan } from '../shared/types/import';
 import { AddPhotosResult, Photo } from '../shared/types/photo';
 import { UpdateSettingsInput, UpdateCheckResult } from '../shared/types/settings';
@@ -407,20 +407,25 @@ function registerIpcHandlers() {
   );
 
   ipcMain.handle('connectors:getBindings', () => connectors.getBindings());
-  ipcMain.handle('connectors:setBinding', (_, task: AiTask, connectorId: string | null) =>
-    connectors.setBinding(task, connectorId)
+  ipcMain.handle('connectors:setBinding', (_, task: AiTask, tier: AiTier, connectorId: string | null) =>
+    connectors.setBinding(task, tier, connectorId)
   );
 
   // Queue
   ipcMain.handle('queue:getState', () => runner.getState());
-  ipcMain.handle('queue:enqueue', (_, task: AiTask, itemIds: string[], collectionId: string | null) => {
-    const connector = connectors.resolveConnector(task);
-    const created = jobs.enqueueMany(task, itemIds, collectionId, connector?.id ?? null);
-    for (const id of itemIds) items.setAiStatus(id, 'queued');
-    return created.length;
-  });
-  ipcMain.handle('queue:estimate', (_, task: AiTask, itemIds: string[], connectorId: string | null) =>
-    estimator.estimate(task, itemIds, connectorId)
+  ipcMain.handle(
+    'queue:enqueue',
+    (_, task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null) => {
+      const connector = connectors.resolveConnector(task, tier);
+      const created = jobs.enqueueMany(task, tier, itemIds, collectionId, connector?.id ?? null);
+      for (const id of itemIds) items.setAiStatus(id, 'queued');
+      return created.length;
+    }
+  );
+  ipcMain.handle(
+    'queue:estimate',
+    (_, task: AiTask, tier: AiTier, itemIds: string[], connectorId: string | null) =>
+      estimator.estimate(task, tier, itemIds, connectorId)
   );
   ipcMain.handle('queue:pause', () => {
     runner.pause();

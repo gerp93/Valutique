@@ -74,6 +74,7 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
       acquired_date TEXT,
       acquired_price REAL,
       ai_status TEXT NOT NULL DEFAULT 'none',
+      ai_tier TEXT,
       ai_last_run_at TEXT,
       ai_error TEXT,
       created_at TEXT NOT NULL,
@@ -128,6 +129,7 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
     CREATE TABLE IF NOT EXISTS appraisals (
       id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
+      tier TEXT NOT NULL DEFAULT 'deep',
       connector_id TEXT,
       connector_label TEXT NOT NULL DEFAULT '',
       model TEXT,
@@ -233,15 +235,73 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
     // Already present on databases created after this change.
   }
 
+  // Migration: quick/deep tiers. Existing rows default to 'deep' -- today's
+  // full search-and-verify behavior -- so nothing changes for anyone until
+  // they explicitly configure a 'quick' binding in Settings.
+  try {
+    db.run(`ALTER TABLE ai_jobs ADD COLUMN tier TEXT NOT NULL DEFAULT 'deep'`);
+  } catch (e) {
+    // Already present on databases created after this change.
+  }
+  try {
+    db.run(`ALTER TABLE items ADD COLUMN ai_tier TEXT`);
+  } catch (e) {
+    // Already present on databases created after this change.
+  }
+  try {
+    db.run(`ALTER TABLE appraisals ADD COLUMN tier TEXT NOT NULL DEFAULT 'deep'`);
+  } catch (e) {
+    // Already present on databases created after this change.
+  }
+
+  // One row per (task, tier): quick and deep are configured independently,
+  // e.g. a fast/no-search model bound to appraise/quick and a
+  // search-capable one bound to appraise/deep.
   db.run(`
     CREATE TABLE IF NOT EXISTS ai_task_bindings (
-      task TEXT PRIMARY KEY,
+      task TEXT NOT NULL,
+      tier TEXT NOT NULL,
       connector_id TEXT,
       prompt_override TEXT,
       updated_at TEXT NOT NULL,
+      PRIMARY KEY (task, tier),
       FOREIGN KEY (connector_id) REFERENCES ai_connectors(id) ON DELETE SET NULL
     )
   `);
+
+  // Migration: task bindings used to have one row per task, keyed on task
+  // alone. Tiering needs (task, tier) as the key, which sql.js can't get to
+  // via ALTER -- rebuild the table. Existing bindings become the 'deep' row
+  // (today's behavior, unchanged) plus an identical 'quick' row as a safe
+  // starting point, so nothing breaks until the user points quick somewhere
+  // cheaper in Settings.
+  {
+    const columns = db.exec(`PRAGMA table_info(ai_task_bindings)`);
+    const hasTier = columns.length > 0 && columns[0].values.some((row) => row[1] === 'tier');
+    if (!hasTier) {
+      db.run(`ALTER TABLE ai_task_bindings RENAME TO ai_task_bindings_old`);
+      db.run(`
+        CREATE TABLE ai_task_bindings (
+          task TEXT NOT NULL,
+          tier TEXT NOT NULL,
+          connector_id TEXT,
+          prompt_override TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (task, tier),
+          FOREIGN KEY (connector_id) REFERENCES ai_connectors(id) ON DELETE SET NULL
+        )
+      `);
+      db.run(`
+        INSERT INTO ai_task_bindings (task, tier, connector_id, prompt_override, updated_at)
+        SELECT task, 'deep', connector_id, prompt_override, updated_at FROM ai_task_bindings_old
+      `);
+      db.run(`
+        INSERT INTO ai_task_bindings (task, tier, connector_id, prompt_override, updated_at)
+        SELECT task, 'quick', connector_id, prompt_override, updated_at FROM ai_task_bindings_old
+      `);
+      db.run(`DROP TABLE ai_task_bindings_old`);
+    }
+  }
 
   // The queue is a real table rather than an in-memory list so a 300-item
   // import survives a restart, a crash, or a rate-limit window that outlasts
@@ -250,6 +310,7 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
     CREATE TABLE IF NOT EXISTS ai_jobs (
       id TEXT PRIMARY KEY,
       task TEXT NOT NULL,
+      tier TEXT NOT NULL DEFAULT 'deep',
       item_id TEXT,
       collection_id TEXT,
       connector_id TEXT,

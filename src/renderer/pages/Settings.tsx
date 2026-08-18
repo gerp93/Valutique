@@ -2,9 +2,14 @@ import { useEffect, useState } from 'react';
 import {
   AiConnector,
   AiTaskBinding,
+  AiTier,
   AI_TASKS,
   AI_TASK_DESCRIPTIONS,
   AI_TASK_LABELS,
+  AI_TIERS,
+  AI_TIER_LABELS,
+  AI_TIER_DESCRIPTIONS,
+  TIERED_TASKS,
   BillingMode,
   ConnectorProvider,
   ConnectorTestResult,
@@ -220,36 +225,49 @@ export default function Settings() {
         </p>
 
         {AI_TASKS.map((task) => {
-          const binding = bindings.find((entry) => entry.task === task);
-          const bound = connectors.find((connector) => connector.id === binding?.connectorId);
-          const searchWarning = task === 'appraise' && bound && !bound.supportsWebSearch;
+          const tiers: AiTier[] = TIERED_TASKS.includes(task) ? AI_TIERS : ['deep'];
 
           return (
-            <div key={task} className="field">
-              <label>{AI_TASK_LABELS[task]}</label>
-              <select
-                value={binding?.connectorId ?? ''}
-                onChange={async (event) => {
-                  await window.valutique.connectors.setBinding(task, event.target.value || null);
-                  await refresh();
-                }}
-              >
-                <option value="">Not set</option>
-                {connectors
-                  .filter((connector) => connector.enabled)
-                  .map((connector) => (
-                    <option key={connector.id} value={connector.id}>
-                      {connector.name} — {BILLING_MODE_BADGES[connector.billingMode]}
-                    </option>
-                  ))}
-              </select>
-              <span className="field-hint">{AI_TASK_DESCRIPTIONS[task]}</span>
-              {searchWarning && (
-                <span className="field-hint" style={{ color: 'var(--color-accent-red)' }}>
-                  {bound.name} cannot search the web. Valuations will come from model memory with no real comparable
-                  listings behind them.
-                </span>
-              )}
+            <div key={task} style={{ marginBottom: 8 }}>
+              <label style={{ fontWeight: 600 }}>{AI_TASK_LABELS[task]}</label>
+              <span className="field-hint" style={{ display: 'block', marginBottom: 8 }}>
+                {AI_TASK_DESCRIPTIONS[task]}
+              </span>
+
+              {tiers.map((tier) => {
+                const binding = bindings.find((entry) => entry.task === task && entry.tier === tier);
+                const bound = connectors.find((connector) => connector.id === binding?.connectorId);
+                const searchWarning = task === 'appraise' && tier === 'deep' && bound && !bound.supportsWebSearch;
+
+                return (
+                  <div key={tier} className="field" style={{ marginLeft: tiers.length > 1 ? 16 : 0 }}>
+                    {tiers.length > 1 && <label>{AI_TIER_LABELS[tier]}</label>}
+                    <select
+                      value={binding?.connectorId ?? ''}
+                      onChange={async (event) => {
+                        await window.valutique.connectors.setBinding(task, tier, event.target.value || null);
+                        await refresh();
+                      }}
+                    >
+                      <option value="">Not set</option>
+                      {connectors
+                        .filter((connector) => connector.enabled)
+                        .map((connector) => (
+                          <option key={connector.id} value={connector.id}>
+                            {connector.name} — {BILLING_MODE_BADGES[connector.billingMode]}
+                          </option>
+                        ))}
+                    </select>
+                    {tiers.length > 1 && <span className="field-hint">{AI_TIER_DESCRIPTIONS[tier]}</span>}
+                    {searchWarning && (
+                      <span className="field-hint" style={{ color: 'var(--color-accent-red)' }}>
+                        {bound.name} cannot search the web. Valuations will come from model memory with no real
+                        comparable listings behind them.
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}

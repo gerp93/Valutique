@@ -47,11 +47,25 @@ export class AnthropicProvider implements AiProvider {
         ? `${request.system}\n\n${schemaInstruction(request.schema)}`
         : request.system;
 
+    // Cache breakpoints, not full caching by default -- Anthropic caches
+    // everything up to (and including) a marked block. The system prompt is
+    // identical across every item in a batch on the same collection, so
+    // marking it lets back-to-back calls in a batch reuse it at a fraction of
+    // input price. The second breakpoint, after the last image, additionally
+    // caches this call's own photos -- worthless across items (each item's
+    // photos differ) but a real saving across the pause_turn continuation
+    // loop below, which currently resends the same images at full price on
+    // every continuation.
+    const system: Anthropic.TextBlockParam[] = [
+      { type: 'text', text: systemText, cache_control: { type: 'ephemeral' } },
+    ];
+
     const content: Anthropic.ContentBlockParam[] = [
       ...request.images.map(
-        (image): Anthropic.ContentBlockParam => ({
+        (image, index): Anthropic.ContentBlockParam => ({
           type: 'image',
           source: { type: 'base64', media_type: image.mediaType as 'image/jpeg', data: image.base64 },
+          ...(index === request.images.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
         })
       ),
       { type: 'text', text: request.prompt },
@@ -72,7 +86,7 @@ export class AnthropicProvider implements AiProvider {
     const params: Record<string, unknown> = {
       model,
       max_tokens: request.maxTokens ?? connector.maxTokens ?? 16000,
-      system: systemText,
+      system,
       messages,
       ...(tools ? { tools } : {}),
       ...(connector.effort ? { output_config: { effort: connector.effort } } : {}),

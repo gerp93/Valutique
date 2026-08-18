@@ -1,4 +1,4 @@
-import { AiConnector } from '../../shared/types/connector';
+import { AiConnector, AiTier } from '../../shared/types/connector';
 import { SuggestedField } from '../../shared/types/fieldDef';
 import { CONDITION_GRADES, ConditionGrade } from '../../shared/types/item';
 import { AppraisalComp } from '../../shared/types/appraisal';
@@ -94,6 +94,7 @@ export class AiTasks {
 
   async identify(
     itemId: string,
+    tier: AiTier,
     connector: AiConnector,
     signal?: AbortSignal,
     onCliOutput?: (line: string) => void
@@ -138,6 +139,8 @@ export class AiTasks {
       conditionNotes: payload.condition_notes ?? item.conditionNotes,
     });
 
+    this.items.setAiTier(itemId, tier);
+
     if (payload.fields && typeof payload.fields === 'object') {
       // Per-field confidence isn't requested from the model any more: an
       // open-ended {field_key: number} map needs additionalProperties: true
@@ -167,6 +170,7 @@ export class AiTasks {
 
   async appraise(
     itemId: string,
+    tier: AiTier,
     connector: AiConnector,
     signal?: AbortSignal,
     onCliOutput?: (line: string) => void
@@ -193,8 +197,13 @@ export class AiTasks {
       })
       .join('\n');
 
-    const canSearch = connector.supportsWebSearch && settings.maxSearchesPerAppraisal > 0;
-    const ebayContext = await this.loadEbayContext(item.name, fieldSummary, settings.ebayEnabled);
+    // Quick is the "one fast read" tier -- no search, no eBay lookup, no comp
+    // verification, regardless of what the connector/settings would otherwise
+    // allow. That's what actually makes it fast and cheap rather than just
+    // "the same pipeline on a cheaper model".
+    const canSearch = tier === 'deep' && connector.supportsWebSearch && settings.maxSearchesPerAppraisal > 0;
+    const ebayContext =
+      tier === 'deep' ? await this.loadEbayContext(item.name, fieldSummary, settings.ebayEnabled) : null;
 
     const response = await this.registry.for(connector).complete(
       connector,
@@ -223,10 +232,13 @@ export class AiTasks {
       throw new AiError('The model did not return a usable valuation.', true, response.text.slice(0, 500));
     }
 
-    const comps = await this.buildComps(payload.comps ?? [], response, settings.verifyCompUrls);
+    // On quick, any comps the model names anyway are discarded rather than
+    // stored unverified -- "no comps" is the promise this tier makes.
+    const comps = tier === 'deep' ? await this.buildComps(payload.comps ?? [], response, settings.verifyCompUrls) : [];
 
     this.appraisals.create({
       itemId,
+      tier,
       connectorId: connector.id,
       connectorLabel: connector.name,
       model: response.model,

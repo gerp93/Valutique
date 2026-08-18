@@ -8,6 +8,7 @@ function toAppraisal(row: Row, comps: AppraisalComp[]): Appraisal {
   return {
     id: reqStr(row.id),
     itemId: reqStr(row.item_id),
+    tier: reqStr(row.tier, 'deep') as Appraisal['tier'],
     connectorId: str(row.connector_id),
     connectorLabel: reqStr(row.connector_label),
     model: str(row.model),
@@ -45,7 +46,7 @@ function toComp(row: Row): AppraisalComp {
 }
 
 const SELECT = `
-  id, item_id, connector_id, connector_label, model, value_low, value_mid, value_high,
+  id, item_id, tier, connector_id, connector_label, model, value_low, value_mid, value_high,
   currency, condition_assessed, confidence, rationale, is_current, search_unavailable, created_at
   FROM appraisals
 `;
@@ -107,12 +108,13 @@ export class AppraisalService {
 
     this.db.run(
       `INSERT INTO appraisals
-         (id, item_id, connector_id, connector_label, model, value_low, value_mid, value_high,
+         (id, item_id, tier, connector_id, connector_label, model, value_low, value_mid, value_high,
           currency, condition_assessed, confidence, rationale, is_current, search_unavailable, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
         id,
         input.itemId,
+        input.tier,
         input.connectorId,
         input.connectorLabel,
         input.model,

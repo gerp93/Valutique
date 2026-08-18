@@ -15,6 +15,7 @@ import {
   AiConnector,
   AiTask,
   AiTaskBinding,
+  AiTier,
   ConnectorTestResult,
   CreateConnectorInput,
   UpdateConnectorInput,
@@ -88,7 +89,7 @@ export interface ValutiqueApi {
     test(id: string): Promise<ConnectorTestResult>;
     listModels(baseUrl: string, connectorId: string | null): Promise<string[]>;
     getBindings(): Promise<AiTaskBinding[]>;
-    setBinding(task: AiTask, connectorId: string | null): Promise<AiTaskBinding>;
+    setBinding(task: AiTask, tier: AiTier, connectorId: string | null): Promise<AiTaskBinding>;
   };
   cli: {
     detect(): Promise<CliEnvironment>;
@@ -98,8 +99,8 @@ export interface ValutiqueApi {
   };
   queue: {
     getState(): Promise<QueueState>;
-    enqueue(task: AiTask, itemIds: string[], collectionId: string | null): Promise<number>;
-    estimate(task: AiTask, itemIds: string[], connectorId: string | null): Promise<BatchEstimate>;
+    enqueue(task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null): Promise<number>;
+    estimate(task: AiTask, tier: AiTier, itemIds: string[], connectorId: string | null): Promise<BatchEstimate>;
     pause(): Promise<QueueState>;
     resume(): Promise<QueueState>;
     cancelAll(): Promise<number>;

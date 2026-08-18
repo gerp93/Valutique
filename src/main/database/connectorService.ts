@@ -4,7 +4,10 @@ import {
   AiConnector,
   AiTask,
   AiTaskBinding,
+  AiTier,
   AI_TASKS,
+  AI_TIERS,
+  TIERED_TASKS,
   CreateConnectorInput,
   UpdateConnectorInput,
 } from '../../shared/types/connector';
@@ -178,57 +181,69 @@ export class ConnectorService {
 
   // --- task bindings -------------------------------------------------------
 
+  /** Tiers a task actually exposes -- only identify/appraise are tiered; suggest_fields is always 'deep'. */
+  private tiersFor(task: AiTask): AiTier[] {
+    return TIERED_TASKS.includes(task) ? AI_TIERS : (['deep'] as AiTier[]);
+  }
+
   getBindings(): AiTaskBinding[] {
-    const rows = all(this.db, `SELECT task, connector_id, prompt_override FROM ai_task_bindings`);
+    const rows = all(this.db, `SELECT task, tier, connector_id, prompt_override FROM ai_task_bindings`);
     const stored = new Map(
       rows.map((row) => [
-        reqStr(row.task),
-        { task: reqStr(row.task) as AiTask, connectorId: str(row.connector_id), promptOverride: str(row.prompt_override) },
+        `${reqStr(row.task)}:${reqStr(row.tier)}`,
+        {
+          task: reqStr(row.task) as AiTask,
+          tier: reqStr(row.tier) as AiTier,
+          connectorId: str(row.connector_id),
+          promptOverride: str(row.prompt_override),
+        },
       ])
     );
 
-    // Always return a row per task, bound or not, so the UI can render the full
-    // list without special-casing "never configured".
-    return AI_TASKS.map(
-      (task) => stored.get(task) ?? { task, connectorId: null, promptOverride: null }
+    // Always return a row per (task, tier), bound or not, so the UI can render
+    // the full list without special-casing "never configured".
+    return AI_TASKS.flatMap((task) =>
+      this.tiersFor(task).map(
+        (tier) => stored.get(`${task}:${tier}`) ?? { task, tier, connectorId: null, promptOverride: null }
+      )
     );
   }
 
-  getBinding(task: AiTask): AiTaskBinding {
-    return this.getBindings().find((b) => b.task === task)!;
+  getBinding(task: AiTask, tier: AiTier = 'deep'): AiTaskBinding {
+    return this.getBindings().find((b) => b.task === task && b.tier === tier)!;
   }
 
-  /** Resolves the connector a task should run on, or null if unbound/disabled. */
-  resolveConnector(task: AiTask): AiConnector | null {
-    const binding = this.getBinding(task);
+  /** Resolves the connector a task/tier should run on, or null if unbound/disabled. */
+  resolveConnector(task: AiTask, tier: AiTier = 'deep'): AiConnector | null {
+    const binding = this.getBinding(task, tier);
     if (!binding.connectorId) return null;
     const connector = this.getById(binding.connectorId);
     return connector && connector.enabled ? connector : null;
   }
 
-  setBinding(task: AiTask, connectorId: string | null, promptOverride?: string | null): AiTaskBinding {
+  setBinding(task: AiTask, tier: AiTier, connectorId: string | null, promptOverride?: string | null): AiTaskBinding {
     this.db.run(
-      `INSERT INTO ai_task_bindings (task, connector_id, prompt_override, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(task) DO UPDATE SET
+      `INSERT INTO ai_task_bindings (task, tier, connector_id, prompt_override, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(task, tier) DO UPDATE SET
          connector_id = excluded.connector_id,
          prompt_override = COALESCE(excluded.prompt_override, ai_task_bindings.prompt_override),
          updated_at = excluded.updated_at`,
-      [task, connectorId, promptOverride ?? null, now()]
+      [task, tier, connectorId, promptOverride ?? null, now()]
     );
     saveDatabase(this.db);
-    return this.getBinding(task);
+    return this.getBinding(task, tier);
   }
 
   /**
-   * Points every unbound task at a connector. Called after the first connector
-   * is added so a new install is immediately usable without visiting the task
-   * bindings screen.
+   * Points every unbound task/tier at a connector. Called after the first
+   * connector is added so a new install is immediately usable without
+   * visiting the task bindings screen.
    */
   bindUnboundTasksTo(connectorId: string): void {
     for (const binding of this.getBindings()) {
       if (!binding.connectorId) {
-        this.setBinding(binding.task, connectorId);
+        this.setBinding(binding.task, binding.tier, connectorId);
       }
     }
   }

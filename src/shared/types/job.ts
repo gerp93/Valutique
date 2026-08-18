@@ -1,4 +1,4 @@
-import { AiTask } from './connector';
+import { AiTask, AiTier } from './connector';
 
 export type JobStatus =
   | 'queued'
@@ -18,6 +18,7 @@ export type JobStatus =
 export interface AiJob {
   id: string;
   task: AiTask;
+  tier: AiTier;
   itemId: string | null;
   collectionId: string | null;
   connectorId: string | null;
@@ -63,6 +64,7 @@ export interface QueueState {
 
 export interface EnqueueJobsInput {
   task: AiTask;
+  tier: AiTier;
   itemIds: string[];
   /** Overrides the task's bound connector for this batch only. */
   connectorId?: string | null;
@@ -76,6 +78,7 @@ export interface EnqueueJobsInput {
 export interface BatchEstimate {
   itemCount: number;
   task: AiTask;
+  tier: AiTier;
   connectorId: string | null;
   connectorName: string;
   billingMode: string;

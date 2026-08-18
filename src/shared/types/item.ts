@@ -1,5 +1,6 @@
 import { Appraisal } from './appraisal';
 import { Photo } from './photo';
+import { AiTier } from './connector';
 
 /**
  * Condition ladder shared by every collection type. Deliberately the common
@@ -51,6 +52,8 @@ export interface Item {
   acquiredDate: string | null;
   acquiredPrice: number | null;
   aiStatus: ItemAiStatus;
+  /** Which tier ('quick' or 'deep') produced the item's current identify result, if any. */
+  aiTier: AiTier | null;
   aiLastRunAt: string | null;
   aiError: string | null;
   createdAt: string;
