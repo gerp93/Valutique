@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Valutique source mark. Everything else (logo.png, icon.png, build/icon.png,
+       renderer logo) is generated from this file by scripts/generate-icons.js —
+       never hand-export a size. -->
+  <rect width="512" height="512" rx="96" fill="#16202C"/>
+  <g transform="translate(126 61) rotate(-15 130 195)">
+    <path d="M130 10 L240 90 Q250 98 250 112 L250 350 Q250 380 220 380 L40 380 Q10 380 10 350 L10 112 Q10 98 20 90 Z"
+          fill="#E8A33D"/>
+    <circle cx="130" cy="103" r="23" fill="#16202C"/>
+    <path d="M68 178 L130 306 L192 178"
+          fill="none" stroke="#16202C" stroke-width="36"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

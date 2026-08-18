@@ -1,0 +1,109 @@
+{
+  "name": "valutique",
+  "version": "1.0.0",
+  "description": "AI-appraised collection manager: drop in photos, get identified, described, and valued items",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && electron .",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.main.json",
+    "package": "electron-builder",
+    "icons": "node scripts/generate-icons.js"
+  },
+  "keywords": [
+    "electron",
+    "collection",
+    "inventory",
+    "appraisal",
+    "ai"
+  ],
+  "author": "Valutique",
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@types/sql.js": "^1.4.9",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "sharp": "^0.33.2",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.8",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "date-fns": "^3.0.0",
+    "electron-updater": "^6.8.9",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.1",
+    "sql.js": "^1.10.3",
+    "uuid": "^9.0.1"
+  },
+  "build": {
+    "appId": "com.valutique.app",
+    "productName": "Valutique",
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.lifestyle"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Utility"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "gerp93",
+      "repo": "Valutique",
+      "releaseType": "release"
+    }
+  }
+}
