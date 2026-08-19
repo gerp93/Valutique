@@ -1,6 +1,10 @@
+import { AiTier } from './connector';
+
 export interface Appraisal {
   id: string;
   itemId: string;
+  /** Which tier produced this appraisal -- 'quick' means a single unverified read, 'deep' means searched and verified comps. */
+  tier: AiTier;
   connectorId: string | null;
   /** Snapshot of the connector name + model at run time, so history stays readable after a connector is edited or deleted. */
   connectorLabel: string;
@@ -55,6 +59,7 @@ export interface AppraisalComp {
 
 export interface CreateAppraisalInput {
   itemId: string;
+  tier: AiTier;
   connectorId: string | null;
   connectorLabel: string;
   model: string | null;

@@ -289,6 +289,9 @@ export default function CollectionDetail() {
                   {item.aiStatus === 'queued' && <span className="pill">queued</span>}
                   {item.aiStatus === 'running' && <span className="pill pill-warn">working…</span>}
                   {item.aiStatus === 'error' && <span className="pill pill-bad">failed</span>}
+                  {item.aiStatus === 'done' && item.aiTier === 'quick' && (
+                    <span className="pill pill-warn">quick</span>
+                  )}
                   {item.conditionGrade !== 'unknown' && (
                     <span className="pill">{CONDITION_LABELS[item.conditionGrade]}</span>
                   )}

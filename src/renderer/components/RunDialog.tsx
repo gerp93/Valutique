@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AiConnector, AiTask, AI_TASK_LABELS } from '@shared/types/connector';
+import { AiConnector, AiTask, AiTier, AI_TASK_LABELS, AI_TIERS, AI_TIER_LABELS, AI_TIER_DESCRIPTIONS } from '@shared/types/connector';
 import { BatchEstimate } from '@shared/types/job';
 import { ItemAiStatus } from '@shared/types/item';
 import { BILLING_MODE_BADGES } from '@shared/providerTemplates';
@@ -48,6 +48,10 @@ export default function RunDialog({
 }) {
   const [connectors, setConnectors] = useState<AiConnector[]>([]);
   const [connectorId, setConnectorId] = useState<string | null>(null);
+  // Deep matches today's behavior (search + verified comps) -- Quick is an
+  // explicit opt-in each time, not a sticky preference, so a run always says
+  // out loud which rigor it's using.
+  const [tier, setTier] = useState<AiTier>('deep');
   const [estimate, setEstimate] = useState<BatchEstimate | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,27 +79,31 @@ export default function RunDialog({
       ]);
       const enabled = all.filter((connector) => connector.enabled);
       setConnectors(enabled);
-      setConnectorId(bindings.find((binding) => binding.task === task)?.connectorId ?? enabled[0]?.id ?? null);
+      setConnectorId(
+        bindings.find((binding) => binding.task === task && binding.tier === tier)?.connectorId ??
+          enabled[0]?.id ??
+          null
+      );
     })();
-  }, [task]);
+  }, [task, tier]);
 
   useEffect(() => {
-    void window.valutique.queue.estimate(task, itemIds, connectorId).then(setEstimate);
-  }, [task, itemIds, connectorId]);
+    void window.valutique.queue.estimate(task, tier, itemIds, connectorId).then(setEstimate);
+  }, [task, tier, itemIds, connectorId]);
 
   const confirm = async () => {
     setBusy(true);
     setError(null);
     try {
-      // The queue reads the task binding itself, so a one-off connector choice
-      // is applied by setting the binding before enqueuing.
+      // The queue reads the task/tier binding itself, so a one-off connector
+      // choice is applied by setting the binding before enqueuing.
       const bindings = await window.valutique.connectors.getBindings();
-      const bound = bindings.find((binding) => binding.task === task)?.connectorId ?? null;
+      const bound = bindings.find((binding) => binding.task === task && binding.tier === tier)?.connectorId ?? null;
       if (connectorId && connectorId !== bound) {
-        await window.valutique.connectors.setBinding(task, connectorId);
+        await window.valutique.connectors.setBinding(task, tier, connectorId);
       }
 
-      const queued = await window.valutique.queue.enqueue(task, itemIds, null);
+      const queued = await window.valutique.queue.enqueue(task, tier, itemIds, null);
       onConfirmed(queued);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -111,6 +119,25 @@ export default function RunDialog({
         <h2>
           {AI_TASK_LABELS[task]} — {itemIds.length} {itemIds.length === 1 ? itemNoun : `${itemNoun}s`}
         </h2>
+
+        <div className="tab-bar" style={{ marginBottom: 8 }} role="tablist" aria-label="Rigor">
+          {AI_TIERS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="tab"
+              aria-selected={tier === option}
+              className={`tab-button${tier === option ? ' active' : ''}`}
+              onClick={() => setTier(option)}
+              disabled={busy}
+            >
+              {AI_TIER_LABELS[option]}
+            </button>
+          ))}
+        </div>
+        <p className="card-hint" style={{ marginBottom: 12 }}>
+          {AI_TIER_DESCRIPTIONS[tier]}
+        </p>
 
         {!singleTarget && doneCount > 0 && (
           <label className="field-inline" style={{ marginBottom: 12 }}>

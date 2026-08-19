@@ -36,6 +36,7 @@ function toItem(row: Row): Item {
     acquiredDate: str(row.acquired_date),
     acquiredPrice: num(row.acquired_price),
     aiStatus: reqStr(row.ai_status, 'none') as ItemAiStatus,
+    aiTier: (str(row.ai_tier) as Item['aiTier']) ?? null,
     aiLastRunAt: str(row.ai_last_run_at),
     aiError: str(row.ai_error),
     createdAt: reqStr(row.created_at),
@@ -45,7 +46,7 @@ function toItem(row: Row): Item {
 
 const ITEM_COLUMNS = `
   id, collection_id, name, description, notes, ai_notes, location, condition_grade, condition_notes,
-  quantity, acquired_date, acquired_price, ai_status, ai_last_run_at, ai_error, created_at, updated_at
+  quantity, acquired_date, acquired_price, ai_status, ai_tier, ai_last_run_at, ai_error, created_at, updated_at
 `;
 
 /**
@@ -266,6 +267,12 @@ export class ItemService {
       `UPDATE items SET ai_status = ?, ai_error = ?, ai_last_run_at = ?, updated_at = ? WHERE id = ?`,
       [status, error, status === 'done' || status === 'error' ? now() : null, now(), id]
     );
+    saveDatabase(this.db);
+  }
+
+  /** Records which tier ('quick' or 'deep') produced the item's current identify result. */
+  setAiTier(id: string, tier: Item['aiTier']): void {
+    this.db.run(`UPDATE items SET ai_tier = ?, updated_at = ? WHERE id = ?`, [tier, now(), id]);
     saveDatabase(this.db);
   }
 

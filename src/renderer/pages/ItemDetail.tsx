@@ -3,11 +3,17 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Appraisal } from '@shared/types/appraisal';
 import { FieldDef } from '@shared/types/fieldDef';
 import { CONDITION_GRADES, CONDITION_LABELS, ConditionGrade, ItemDetail as ItemDetailType } from '@shared/types/item';
-import { AiTask } from '@shared/types/connector';
+import { AiTask, AiTier, AI_TIER_LABELS } from '@shared/types/connector';
 import PhotoImage from '../components/PhotoImage';
 import PhotoLightbox from '../components/PhotoLightbox';
 import RunDialog from '../components/RunDialog';
 import { describeComp, formatDateTime, formatMoney, formatPercent, formatRange } from '../utils/format';
+
+/** 'quick' means a single unverified read; 'deep' means searched and verified -- the badge is how that's never left implicit. */
+function TierPill({ tier }: { tier: AiTier | null }) {
+  if (!tier) return null;
+  return <span className={`pill${tier === 'quick' ? ' pill-warn' : ' pill-good'}`}>{AI_TIER_LABELS[tier]}</span>;
+}
 
 export default function ItemDetail() {
   const { itemId } = useParams<{ itemId: string }>();
@@ -127,11 +133,18 @@ export default function ItemDetail() {
 
       <div className="page-header">
         <div>
-          <h1>{item.name || 'Not yet identified'}</h1>
+          <h1>
+            {item.name || 'Not yet identified'} <TierPill tier={item.aiTier} />
+          </h1>
           <p className="subtitle">
             {current
               ? `Valued ${formatDateTime(current.createdAt)} by ${current.connectorLabel}`
               : 'No valuation yet'}
+            {current && (
+              <span style={{ marginLeft: 8 }}>
+                <TierPill tier={current.tier} />
+              </span>
+            )}
           </p>
         </div>
         <div className="header-actions">
@@ -443,8 +456,8 @@ export default function ItemDetail() {
                           {appraisal.isCurrent && <span className="pill pill-good" style={{ marginLeft: 6 }}>current</span>}
                         </td>
                         <td className="text-muted">
-                          {appraisal.connectorLabel}
-                          {appraisal.searchUnavailable && (
+                          {appraisal.connectorLabel} <TierPill tier={appraisal.tier} />
+                          {appraisal.searchUnavailable && appraisal.tier !== 'quick' && (
                             <div>
                               <span className="pill pill-warn">no web search</span>
                             </div>
@@ -497,14 +510,23 @@ function ValuationPanel({ appraisal }: { appraisal: Appraisal | null }) {
   return (
     <>
       <div className="card">
-        <div className="stat-label">Estimated value</div>
+        <div className="stat-label">
+          Estimated value <TierPill tier={appraisal.tier} />
+        </div>
         <div className="stat-value">{formatMoney(appraisal.valueMid, appraisal.currency)}</div>
         <div className="stat-sub">
           Range {formatRange(appraisal.valueLow, appraisal.valueHigh, appraisal.currency)} · confidence{' '}
           {formatPercent(appraisal.confidence)}
         </div>
 
-        {appraisal.searchUnavailable && (
+        {appraisal.searchUnavailable && appraisal.tier === 'quick' && (
+          <div className="banner" style={{ marginTop: 14, marginBottom: 0 }}>
+            Quick valuation: a single read from the model's own knowledge, with no web search and no verified
+            comparable listings. Re-run as Deep for a number backed by real comps.
+          </div>
+        )}
+
+        {appraisal.searchUnavailable && appraisal.tier === 'deep' && (
           <div className="banner banner-warn" style={{ marginTop: 14, marginBottom: 0 }}>
             This valuation was produced without web access, so it reflects the model's own knowledge rather than
             current listings. Bind the appraise task to a connector that can search for a figure backed by real

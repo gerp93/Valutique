@@ -203,13 +203,13 @@ export class JobRunner {
   private resolveConnector(job: AiJob) {
     // A job records the connector chosen when it was queued, but that
     // connector may since have been deleted or disabled -- fall back to
-    // whatever the task is bound to now rather than failing the job.
+    // whatever the task/tier is bound to now rather than failing the job.
     const pinned = job.connectorId ? this.connectors.getById(job.connectorId) : null;
-    const connector = pinned?.enabled ? pinned : this.connectors.resolveConnector(job.task);
+    const connector = pinned?.enabled ? pinned : this.connectors.resolveConnector(job.task, job.tier);
 
     if (!connector) {
       throw new AiCapabilityError(
-        `No connector is set up for "${job.task}". Add one in Settings and bind it to this task.`
+        `No connector is set up for "${job.task}" (${job.tier}). Add one in Settings and bind it to this task/tier.`
       );
     }
     return connector;
@@ -221,11 +221,11 @@ export class JobRunner {
     switch (job.task) {
       case 'identify':
         if (!job.itemId) throw new AiError('Identify job has no item.', false);
-        return this.tasks.identify(job.itemId, connector, signal, onCliOutput);
+        return this.tasks.identify(job.itemId, job.tier, connector, signal, onCliOutput);
 
       case 'appraise':
         if (!job.itemId) throw new AiError('Appraise job has no item.', false);
-        return await this.tasks.appraise(job.itemId, connector, signal, onCliOutput);
+        return await this.tasks.appraise(job.itemId, job.tier, connector, signal, onCliOutput);
 
       default:
         throw new AiError(`Task "${job.task}" is not runnable from the queue.`, false);
@@ -238,8 +238,11 @@ export class JobRunner {
 
     const settings = this.settings.get();
     if (settings.autoAppraiseAfterIdentify) {
-      const connector = this.connectors.resolveConnector('appraise');
-      this.jobs.enqueue('appraise', job.itemId, job.collectionId, connector?.id ?? null);
+      // Carries the same tier forward: a quick identify auto-chains into a
+      // quick appraise, deep into deep -- the user's choice of rigor applies
+      // to the whole run, not just its first step.
+      const connector = this.connectors.resolveConnector('appraise', job.tier);
+      this.jobs.enqueue('appraise', job.tier, job.itemId, job.collectionId, connector?.id ?? null);
     }
 
     // Now that the item has a real name, it can be compared against its

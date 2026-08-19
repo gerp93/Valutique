@@ -242,8 +242,12 @@ export class ImportService {
 
     let jobsQueued = 0;
     if (plan.autoProcess && settings.autoProcessOnImport) {
-      const connector = this.connectors.resolveConnector('identify');
-      const queued = this.jobs.enqueueMany('identify', itemIds, plan.collectionId, connector?.id ?? null);
+      // Auto-process on import always runs the deep tier -- there's no UI at
+      // import time to choose, and "drop it and walk away" should mean the
+      // full, evidence-backed pipeline unless the user explicitly asks for
+      // quick via a manual re-run.
+      const connector = this.connectors.resolveConnector('identify', 'deep');
+      const queued = this.jobs.enqueueMany('identify', 'deep', itemIds, plan.collectionId, connector?.id ?? null);
       jobsQueued = queued.length;
 
       for (const id of itemIds) {

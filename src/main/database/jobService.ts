@@ -1,7 +1,7 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import { AiJob, JobStatus } from '../../shared/types/job';
-import { AiTask } from '../../shared/types/connector';
+import { AiTask, AiTier } from '../../shared/types/connector';
 import { all, one, count, reqStr, str, num, reqNum, now, Row } from './helpers';
 import { saveDatabase } from './schema';
 
@@ -9,6 +9,7 @@ function toJob(row: Row): AiJob {
   return {
     id: reqStr(row.id),
     task: reqStr(row.task) as AiTask,
+    tier: reqStr(row.tier, 'deep') as AiTier,
     itemId: str(row.item_id),
     collectionId: str(row.collection_id),
     connectorId: str(row.connector_id),
@@ -29,7 +30,7 @@ function toJob(row: Row): AiJob {
 }
 
 const SELECT = `
-  id, task, item_id, collection_id, connector_id, status, attempts, error, not_before,
+  id, task, tier, item_id, collection_id, connector_id, status, attempts, error, not_before,
   tokens_in, tokens_out, web_searches, cost_estimate, duration_ms, created_at, started_at, finished_at, cli_log
   FROM ai_jobs
 `;
@@ -59,7 +60,13 @@ export class JobService {
    * clicking "appraise" twice, or re-importing photos onto an item that is
    * already queued, should not double the work.
    */
-  enqueue(task: AiTask, itemId: string | null, collectionId: string | null, connectorId: string | null): AiJob | null {
+  enqueue(
+    task: AiTask,
+    tier: AiTier,
+    itemId: string | null,
+    collectionId: string | null,
+    connectorId: string | null
+  ): AiJob | null {
     if (itemId) {
       const pending = count(
         this.db,
@@ -71,18 +78,24 @@ export class JobService {
 
     const id = uuidv4();
     this.db.run(
-      `INSERT INTO ai_jobs (id, task, item_id, collection_id, connector_id, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?)`,
-      [id, task, itemId, collectionId, connectorId, now()]
+      `INSERT INTO ai_jobs (id, task, tier, item_id, collection_id, connector_id, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
+      [id, task, tier, itemId, collectionId, connectorId, now()]
     );
     saveDatabase(this.db);
     return this.getById(id);
   }
 
-  enqueueMany(task: AiTask, itemIds: string[], collectionId: string | null, connectorId: string | null): AiJob[] {
+  enqueueMany(
+    task: AiTask,
+    tier: AiTier,
+    itemIds: string[],
+    collectionId: string | null,
+    connectorId: string | null
+  ): AiJob[] {
     const created: AiJob[] = [];
     for (const itemId of itemIds) {
-      const job = this.enqueue(task, itemId, collectionId, connectorId);
+      const job = this.enqueue(task, tier, itemId, collectionId, connectorId);
       if (job) created.push(job);
     }
     return created;

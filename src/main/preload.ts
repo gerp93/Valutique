@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/collection';
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
-import { AiTask, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
+import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
 import { ImportAnalysis, ImportPlan } from '../shared/types/import';
 import { UpdateSettingsInput } from '../shared/types/settings';
 import { CliLogEvent, QueueState } from '../shared/types/job';
@@ -85,8 +85,8 @@ contextBridge.exposeInMainWorld('valutique', {
     listModels: (baseUrl: string, connectorId: string | null) =>
       ipcRenderer.invoke('connectors:listModels', baseUrl, connectorId),
     getBindings: () => ipcRenderer.invoke('connectors:getBindings'),
-    setBinding: (task: AiTask, connectorId: string | null) =>
-      ipcRenderer.invoke('connectors:setBinding', task, connectorId),
+    setBinding: (task: AiTask, tier: AiTier, connectorId: string | null) =>
+      ipcRenderer.invoke('connectors:setBinding', task, tier, connectorId),
   },
 
   cli: {
@@ -102,10 +102,10 @@ contextBridge.exposeInMainWorld('valutique', {
 
   queue: {
     getState: () => ipcRenderer.invoke('queue:getState'),
-    enqueue: (task: AiTask, itemIds: string[], collectionId: string | null) =>
-      ipcRenderer.invoke('queue:enqueue', task, itemIds, collectionId),
-    estimate: (task: AiTask, itemIds: string[], connectorId: string | null) =>
-      ipcRenderer.invoke('queue:estimate', task, itemIds, connectorId),
+    enqueue: (task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null) =>
+      ipcRenderer.invoke('queue:enqueue', task, tier, itemIds, collectionId),
+    estimate: (task: AiTask, tier: AiTier, itemIds: string[], connectorId: string | null) =>
+      ipcRenderer.invoke('queue:estimate', task, tier, itemIds, connectorId),
     pause: () => ipcRenderer.invoke('queue:pause'),
     resume: () => ipcRenderer.invoke('queue:resume'),
     cancelAll: () => ipcRenderer.invoke('queue:cancelAll'),

@@ -1,4 +1,4 @@
-import { AiTask } from '../../shared/types/connector';
+import { AiTask, AiTier } from '../../shared/types/connector';
 import { BatchEstimate } from '../../shared/types/job';
 import { BILLING_MODE_LABELS } from '../../shared/providerTemplates';
 import { ConnectorService } from '../database/connectorService';
@@ -27,10 +27,10 @@ export class BatchEstimator {
     private settings: SettingsService
   ) {}
 
-  estimate(task: AiTask, itemIds: string[], connectorId?: string | null): BatchEstimate {
+  estimate(task: AiTask, tier: AiTier, itemIds: string[], connectorId?: string | null): BatchEstimate {
     const connector = connectorId
       ? this.connectors.getById(connectorId)
-      : this.connectors.resolveConnector(task);
+      : this.connectors.resolveConnector(task, tier);
 
     const settings = this.settings.get();
     const baseline = TASK_TOKEN_BASELINE[task];
@@ -40,6 +40,7 @@ export class BatchEstimator {
       return {
         itemCount: itemIds.length,
         task,
+        tier,
         connectorId: null,
         connectorName: 'Not configured',
         billingMode: '—',
@@ -64,7 +65,7 @@ export class BatchEstimator {
     const perItemOut = observed?.tokensOut ?? baseline.tokensOut;
 
     const searchesPerItem =
-      task === 'appraise' && connector.supportsWebSearch
+      task === 'appraise' && tier === 'deep' && connector.supportsWebSearch
         ? Math.min(baseline.searches, settings.maxSearchesPerAppraisal)
         : 0;
 
@@ -82,7 +83,7 @@ export class BatchEstimator {
 
     // Capability problems are worth surfacing here rather than as 300 identical
     // job errors later.
-    if (task === 'appraise' && !connector.supportsWebSearch) {
+    if (task === 'appraise' && tier === 'deep' && !connector.supportsWebSearch) {
       warnings.push(
         `"${connector.name}" cannot search the web, so values will come from model memory alone and no real comparable listings will be saved.`
       );
@@ -102,6 +103,7 @@ export class BatchEstimator {
     return {
       itemCount: count,
       task,
+      tier,
       connectorId: connector.id,
       connectorName: connector.name,
       billingMode: BILLING_MODE_LABELS[connector.billingMode] ?? connector.billingMode,

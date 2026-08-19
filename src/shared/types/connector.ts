@@ -43,6 +43,29 @@ export const AI_TASK_DESCRIPTIONS: Record<AiTask, string> = {
   suggest_fields: 'Proposes a starting set of custom fields when you create a collection.',
 };
 
+/**
+ * How thoroughly identify/appraise should run. `suggest_fields` is a single
+ * cheap call either way and isn't tiered -- only `identify` and `appraise`
+ * expose a choice.
+ */
+export type AiTier = 'quick' | 'deep';
+
+export const AI_TIERS: AiTier[] = ['quick', 'deep'];
+
+/** Tasks a user actually picks a tier for. `suggest_fields` always runs as 'deep' internally. */
+export const TIERED_TASKS: AiTask[] = ['identify', 'appraise'];
+
+export const AI_TIER_LABELS: Record<AiTier, string> = {
+  quick: 'Quick',
+  deep: 'Deep',
+};
+
+export const AI_TIER_DESCRIPTIONS: Record<AiTier, string> = {
+  quick:
+    'A single fast read from the model’s own knowledge — no web search, no comp verification. Cheap and quick, but unverified.',
+  deep: 'Searches for real comparable listings and verifies every link before saving it. Slower and costs more, but the number is backed by evidence.',
+};
+
 /** Per-million-token prices, used only to estimate spend for `api_credits` connectors. */
 export interface ConnectorPricing {
   inputPerMTok: number | null;
@@ -121,9 +144,14 @@ export interface UpdateConnectorInput extends Partial<Omit<CreateConnectorInput,
   apiKey?: string | null;
 }
 
-/** Which connector runs which task. One row per task; a task with no binding is unavailable. */
+/**
+ * Which connector runs which (task, tier) pair. One row per task/tier
+ * combination; a combination with no binding is unavailable. `suggest_fields`
+ * only ever has a `deep` row since it isn't tiered.
+ */
 export interface AiTaskBinding {
   task: AiTask;
+  tier: AiTier;
   connectorId: string | null;
   /** Replaces the built-in prompt for this task entirely, when set. */
   promptOverride: string | null;
