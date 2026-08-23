@@ -17,8 +17,9 @@ import { JobService } from '../database/jobService';
 import { AiTasks } from '../ai/tasks';
 import { AiImage } from '../ai/types';
 import * as photoStore from '../photoStore';
-import { readCaptureTime } from './exif';
+import { readExifSummary } from './exif';
 import { averageHash, isNearDuplicate } from './similarity';
+import { checkReducedSize } from './reducedSizeDetector';
 
 /**
  * The "dump 50 photos in and walk away" pipeline.
@@ -86,9 +87,11 @@ export class ImportService {
 
         // EXIF first; file mtime is a decent proxy for photos that lost their
         // metadata to an edit or an export.
-        const captured = readCaptureTime(buffer) ?? safeMtime(filePath);
+        const exif = readExifSummary(buffer);
+        const captured = exif.capturedAt ?? safeMtime(filePath);
         const existingItemId = this.photos.findItemByHash(info.sha256);
         const preview = thumbnailFor(filePath, REVIEW_THUMBNAIL_EDGE);
+        const reducedSize = checkReducedSize(info.width, info.height, exif.hasCameraTag);
 
         photos.push({
           sourcePath: filePath,
@@ -101,6 +104,8 @@ export class ImportService {
           duplicateOfItemId: existingItemId,
           duplicateOfItemName: existingItemId ? this.items.getById(existingItemId)?.name ?? null : null,
           nearDuplicateOfIndex: null,
+          looksReducedSize: reducedSize.looksReduced,
+          reducedSizeReason: reducedSize.reason,
           thumbnail: preview ? `data:${preview.mediaType};base64,${preview.base64}` : '',
         });
 

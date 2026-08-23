@@ -29,11 +29,18 @@ export default function ImportDialog({
   const [phase, setPhase] = useState<'choose' | 'review'>('choose');
   const [error, setError] = useState<string | null>(null);
   const [movingPhoto, setMovingPhoto] = useState<number | null>(null);
+  const [reducedSizeAcknowledged, setReducedSizeAcknowledged] = useState(false);
 
   const duplicateCount = useMemo(
     () => analysis?.photos.filter((photo) => photo.duplicateOfItemId).length ?? 0,
     [analysis]
   );
+
+  const reducedSizeCount = useMemo(
+    () => analysis?.photos.filter((photo) => photo.looksReducedSize).length ?? 0,
+    [analysis]
+  );
+  const mustAcknowledgeReducedSize = reducedSizeCount > 0 && !reducedSizeAcknowledged;
 
   const pick = async (mode: 'files' | 'folder') => {
     const paths = mode === 'files' ? await window.valutique.import.pickFiles() : await window.valutique.import.pickFolder();
@@ -45,6 +52,7 @@ export default function ImportDialog({
       const result = await window.valutique.import.analyze(collectionId, paths, autoGroup);
       setAnalysis(result);
       setGroups(result.groups.map((group) => group.photoIndexes));
+      setReducedSizeAcknowledged(false);
       setPhase('review');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -166,6 +174,25 @@ export default function ImportDialog({
                 </div>
               )}
 
+              {reducedSizeCount > 0 && (
+                <div className="banner banner-warn">
+                  {reducedSizeCount} {reducedSizeCount === 1 ? 'photo looks' : 'photos look'} like a reduced-size copy
+                  rather than the original -- resized "for email" or "for sharing" exports from iPhoto, Photos, or a
+                  similar app, for example. The AI appraisal works from fine detail, so importing the full-size
+                  originals instead (re-export or re-download from the source app) will usually give better results.
+                  Look for a "reduced size" badge on the affected photos below.
+                  <div className="field-inline" style={{ marginTop: 8, marginBottom: 0 }}>
+                    <input
+                      id="ack-reduced-size"
+                      type="checkbox"
+                      checked={reducedSizeAcknowledged}
+                      onChange={(event) => setReducedSizeAcknowledged(event.target.checked)}
+                    />
+                    <label htmlFor="ack-reduced-size">I understand, use these anyway</label>
+                  </div>
+                </div>
+              )}
+
               <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
                 <button className="btn btn-small" onClick={setEachPhotoSeparate}>
                   Make every photo its own {itemNoun}
@@ -218,7 +245,28 @@ export default function ImportDialog({
                                   paths -- the preview came over with the
                                   analysis. */}
                               <img src={photo.thumbnail} alt="" />
-                              {photo.duplicateOfItemId && <span className="photo-tile-badge">already added</span>}
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  left: 4,
+                                  bottom: 4,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 2,
+                                  alignItems: 'flex-start',
+                                }}
+                              >
+                                {photo.duplicateOfItemId && <span className="photo-tile-badge" style={{ position: 'static' }}>already added</span>}
+                                {photo.looksReducedSize && (
+                                  <span
+                                    className="photo-tile-badge"
+                                    style={{ position: 'static' }}
+                                    title={photo.reducedSizeReason ?? undefined}
+                                  >
+                                    reduced size
+                                  </span>
+                                )}
+                              </div>
                             </button>
                             {group.length > 1 && movingPhoto === null && (
                               <button
@@ -253,7 +301,12 @@ export default function ImportDialog({
                 <button className="btn" onClick={onClose} disabled={busy}>
                   Cancel
                 </button>
-                <button className="btn btn-primary" onClick={() => void commit()} disabled={busy}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void commit()}
+                  disabled={busy || mustAcknowledgeReducedSize}
+                  title={mustAcknowledgeReducedSize ? 'Acknowledge the reduced-size photo warning above first' : undefined}
+                >
                   {busy ? 'Adding…' : `Add ${groups.length} ${groups.length === 1 ? itemNoun : `${itemNoun}s`}`}
                 </button>
               </div>

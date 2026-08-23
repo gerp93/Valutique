@@ -20,6 +20,13 @@ export interface AddPhotosResult {
   failed: { fileName: string; error: string }[];
 }
 
+/** A file that looks like a standardized reduced-size export rather than the original, from a pre-import check. */
+export interface ReducedSizePhotoCheck {
+  filePath: string;
+  fileName: string;
+  reason: string;
+}
+
 /** A file the user dropped in, before it's been assigned to an item. */
 export interface StagedPhoto {
   sourcePath: string;

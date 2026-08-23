@@ -4,6 +4,7 @@ import { Appraisal } from '@shared/types/appraisal';
 import { FieldDef } from '@shared/types/fieldDef';
 import { CONDITION_GRADES, CONDITION_LABELS, ConditionGrade, ItemDetail as ItemDetailType } from '@shared/types/item';
 import { AiTask, AiTier, AI_TIER_LABELS } from '@shared/types/connector';
+import { ReducedSizePhotoCheck } from '@shared/types/photo';
 import PhotoImage from '../components/PhotoImage';
 import PhotoLightbox from '../components/PhotoLightbox';
 import RunDialog from '../components/RunDialog';
@@ -27,6 +28,13 @@ export default function ItemDetail() {
   const [saving, setSaving] = useState(false);
   const [addingPhotos, setAddingPhotos] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  // Set when the picked batch has files that look like reduced-size exports
+  // (iPhoto, Photos, etc.) rather than the originals -- holds the add until
+  // the user explicitly clicks through the warning.
+  const [reducedSizeWarning, setReducedSizeWarning] = useState<{
+    paths: string[];
+    flagged: ReducedSizePhotoCheck[];
+  } | null>(null);
   // Which photo is shown large. Separate from which one is the cover photo --
   // clicking a thumbnail to look at it and clicking a thumbnail to make it the
   // card's cover used to be the same action, which meant just browsing your
@@ -96,6 +104,17 @@ export default function ItemDetail() {
     const paths = await window.valutique.import.pickFiles();
     if (paths.length === 0) return;
 
+    setPhotoError(null);
+    const flagged = await window.valutique.photos.checkReducedSize(paths);
+    if (flagged.length > 0) {
+      setReducedSizeWarning({ paths, flagged });
+      return;
+    }
+
+    await commitAddPhotos(paths);
+  };
+
+  const commitAddPhotos = async (paths: string[]) => {
     setAddingPhotos(true);
     setPhotoError(null);
     try {
@@ -112,6 +131,13 @@ export default function ItemDetail() {
     } finally {
       setAddingPhotos(false);
     }
+  };
+
+  const confirmAddDespiteReducedSize = async () => {
+    if (!reducedSizeWarning) return;
+    const { paths } = reducedSizeWarning;
+    setReducedSizeWarning(null);
+    await commitAddPhotos(paths);
   };
 
   const setCoverPhoto = async (photoId: string) => {
@@ -484,6 +510,36 @@ export default function ItemDetail() {
             void refresh();
           }}
         />
+      )}
+
+      {reducedSizeWarning && (
+        <div className="modal-backdrop" onClick={() => setReducedSizeWarning(null)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Possibly reduced-size photos</h2>
+            <div className="banner banner-warn">
+              {reducedSizeWarning.flagged.length} of {reducedSizeWarning.paths.length}{' '}
+              {reducedSizeWarning.paths.length === 1 ? 'photo looks' : 'photos look'} like a reduced-size copy rather
+              than the original -- resized "for email" or "for sharing" exports from iPhoto, Photos, or a similar
+              app, for example. The AI appraisal works from fine detail, so importing the full-size originals
+              instead (re-export or re-download from the source app) will usually give better results.
+            </div>
+            <ul style={{ margin: '0 0 16px', paddingLeft: 20, fontSize: 13 }}>
+              {reducedSizeWarning.flagged.map((f) => (
+                <li key={f.filePath}>
+                  {f.fileName} <span className="text-muted">— {f.reason}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setReducedSizeWarning(null)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={() => void confirmAddDespiteReducedSize()}>
+                I understand, add anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {lightboxOpen && viewedPhotoIndex >= 0 && (

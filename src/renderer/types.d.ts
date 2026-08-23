@@ -9,7 +9,7 @@ import {
   ItemListEntry,
   UpdateItemInput,
 } from '@shared/types/item';
-import { AddPhotosResult, Photo } from '@shared/types/photo';
+import { AddPhotosResult, Photo, ReducedSizePhotoCheck } from '@shared/types/photo';
 import { Appraisal } from '@shared/types/appraisal';
 import {
   AiConnector,
@@ -70,6 +70,7 @@ export interface ValutiqueApi {
     delete(photoId: string): Promise<{ success: boolean }>;
     url(relativePath: string): Promise<string>;
     addToItem(itemId: string, filePaths: string[]): Promise<AddPhotosResult>;
+    checkReducedSize(filePaths: string[]): Promise<ReducedSizePhotoCheck[]>;
   };
   import: {
     pickFiles(): Promise<string[]>;

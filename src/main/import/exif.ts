@@ -11,6 +11,8 @@
  * and then the IFD0 DateTime (0x0132).
  */
 
+const TAG_MAKE = 0x010f;
+const TAG_MODEL = 0x0110;
 const TAG_DATETIME = 0x0132;
 const TAG_EXIF_IFD_POINTER = 0x8769;
 const TAG_DATETIME_ORIGINAL = 0x9003;
@@ -116,19 +118,32 @@ function parseExifDate(text: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Capture time from EXIF, or null when the file has none (screenshots, edited exports, PNGs). */
-export function readCaptureTime(buffer: Buffer): Date | null {
+export interface ExifSummary {
+  capturedAt: Date | null;
+  /** True when Make or Model (0x010F/0x0110) survived -- cameras and phones always write these. */
+  hasCameraTag: boolean;
+}
+
+/**
+ * Capture time and camera-tag presence from EXIF. `hasCameraTag` false is a
+ * signal (not proof) that the file is a re-encoded export rather than an
+ * original: photo apps commonly strip Make/Model when producing a resized
+ * copy, but plenty of legitimate originals (screenshots, PNGs, scans) never
+ * had it either.
+ */
+export function readExifSummary(buffer: Buffer): ExifSummary {
   try {
     const tiffStart = findTiffStart(buffer);
-    if (tiffStart === null || tiffStart + 8 > buffer.length) return null;
+    if (tiffStart === null || tiffStart + 8 > buffer.length) return { capturedAt: null, hasCameraTag: false };
 
     const byteOrder = buffer.toString('ascii', tiffStart, tiffStart + 2);
-    if (byteOrder !== 'II' && byteOrder !== 'MM') return null;
+    if (byteOrder !== 'II' && byteOrder !== 'MM') return { capturedAt: null, hasCameraTag: false };
 
     const reader: Reader = { buffer, littleEndian: byteOrder === 'II', tiffStart };
 
     const ifd0Offset = u32(reader, tiffStart + 4);
-    const ifd0 = readIfd(reader, ifd0Offset, [TAG_DATETIME, TAG_EXIF_IFD_POINTER]);
+    const ifd0 = readIfd(reader, ifd0Offset, [TAG_DATETIME, TAG_EXIF_IFD_POINTER, TAG_MAKE, TAG_MODEL]);
+    const hasCameraTag = ifd0.has(TAG_MAKE) || ifd0.has(TAG_MODEL);
 
     const exifPointer = ifd0.get(TAG_EXIF_IFD_POINTER);
     if (typeof exifPointer === 'number') {
@@ -137,23 +152,26 @@ export function readCaptureTime(buffer: Buffer): Date | null {
       const original = exifIfd.get(TAG_DATETIME_ORIGINAL);
       if (typeof original === 'string') {
         const parsed = parseExifDate(original);
-        if (parsed) return parsed;
+        if (parsed) return { capturedAt: parsed, hasCameraTag };
       }
 
       const digitized = exifIfd.get(TAG_DATETIME_DIGITIZED);
       if (typeof digitized === 'string') {
         const parsed = parseExifDate(digitized);
-        if (parsed) return parsed;
+        if (parsed) return { capturedAt: parsed, hasCameraTag };
       }
     }
 
     const fallback = ifd0.get(TAG_DATETIME);
-    if (typeof fallback === 'string') return parseExifDate(fallback);
-
-    return null;
+    return { capturedAt: typeof fallback === 'string' ? parseExifDate(fallback) : null, hasCameraTag };
   } catch {
     // Malformed metadata is common in the wild. Losing the timestamp only
     // costs us a grouping hint, so never let it fail an import.
-    return null;
+    return { capturedAt: null, hasCameraTag: false };
   }
+}
+
+/** Capture time from EXIF, or null when the file has none (screenshots, edited exports, PNGs). */
+export function readCaptureTime(buffer: Buffer): Date | null {
+  return readExifSummary(buffer).capturedAt;
 }

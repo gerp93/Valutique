@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('valutique', {
     delete: (photoId: string) => ipcRenderer.invoke('photos:delete', photoId),
     url: (relativePath: string) => ipcRenderer.invoke('photos:url', relativePath),
     addToItem: (itemId: string, filePaths: string[]) => ipcRenderer.invoke('photos:addToItem', itemId, filePaths),
+    checkReducedSize: (filePaths: string[]) => ipcRenderer.invoke('photos:checkReducedSize', filePaths),
   },
 
   import: {

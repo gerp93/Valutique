@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as dns from 'dns';
+import * as fs from 'fs';
 import * as path from 'path';
 import { Database } from 'sql.js';
 
@@ -28,6 +29,8 @@ import { JobRunner } from './ai/jobRunner';
 import { BatchEstimator } from './ai/batchEstimator';
 import { ImportService } from './import/importService';
 import { DuplicateDetector } from './duplicates';
+import { readExifSummary } from './import/exif';
+import { checkReducedSize } from './import/reducedSizeDetector';
 
 import * as photoStore from './photoStore';
 import { detectCli, detectEnvironment, installCli, listRemoteModels } from './cliDetect';
@@ -45,7 +48,7 @@ import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldD
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
 import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
 import { ImportAnalysis, ImportPlan } from '../shared/types/import';
-import { AddPhotosResult, Photo } from '../shared/types/photo';
+import { AddPhotosResult, Photo, ReducedSizePhotoCheck } from '../shared/types/photo';
 import { UpdateSettingsInput, UpdateCheckResult } from '../shared/types/settings';
 
 // Packaged builds resolve app.getPath('userData') from build.productName
@@ -335,6 +338,30 @@ function registerIpcHandlers() {
     return { added, failed };
   });
 
+  // Checked before photos:addToItem actually ingests anything, so the
+  // renderer can warn about likely reduced-size copies (iPhoto/Photos
+  // exports, etc.) and get the user to acknowledge before proceeding.
+  ipcMain.handle('photos:checkReducedSize', (_, filePaths: string[]): ReducedSizePhotoCheck[] => {
+    const flagged: ReducedSizePhotoCheck[] = [];
+
+    for (const filePath of filePaths) {
+      if (!photoStore.isSupportedImage(filePath)) continue;
+      try {
+        const buffer = fs.readFileSync(filePath);
+        const info = photoStore.inspect(filePath);
+        const exif = readExifSummary(buffer);
+        const check = checkReducedSize(info.width, info.height, exif.hasCameraTag);
+        if (check.looksReduced) {
+          flagged.push({ filePath, fileName: path.basename(filePath), reason: check.reason ?? '' });
+        }
+      } catch {
+        // An unreadable file is reported by the actual add step; nothing to warn about here.
+      }
+    }
+
+    return flagged;
+  });
+
   // Import
   ipcMain.handle('import:pickFiles', async () => {
     if (!mainWindow) return [];
@@ -353,7 +380,6 @@ function registerIpcHandlers() {
     });
     if (result.canceled || result.filePaths.length === 0) return [];
 
-    const fs = await import('fs');
     const folder = result.filePaths[0];
     return fs
       .readdirSync(folder)

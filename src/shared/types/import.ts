@@ -12,6 +12,10 @@ export interface AnalyzedPhoto {
   duplicateOfItemName: string | null;
   /** Set when a different file looks like the same shot -- flagged, not skipped. */
   nearDuplicateOfIndex: number | null;
+  /** True when the file looks like a standardized reduced-size export rather than the original. */
+  looksReducedSize: boolean;
+  /** Plain-English explanation of why, when `looksReducedSize` is true. */
+  reducedSizeReason: string | null;
   /**
    * Small data-URL preview. These files are not in the media library yet, and
    * the renderer cannot read arbitrary disk paths, so the preview travels with
