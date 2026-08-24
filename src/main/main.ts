@@ -63,6 +63,22 @@ photoStore.registerPhotoProtocolScheme();
 let mainWindow: BrowserWindow | null = null;
 let db: Database | null = null;
 
+// Only one copy may run at a time. sql.js holds the entire database in memory
+// and writes it back wholesale on every save, so two instances do not merge --
+// whichever saves last silently discards the other's work. Must be requested
+// before the app is ready.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Someone tried to launch a second copy; surface the one already running.
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
+
 let collections: CollectionService;
 let fieldDefs: FieldDefService;
 let photos: PhotoService;
@@ -107,7 +123,22 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  db = await initDatabase();
+  // The second instance is on its way out; it must not touch the database.
+  if (!hasSingleInstanceLock) return;
+
+  try {
+    db = await initDatabase();
+  } catch (err) {
+    // An unreadable database is not recoverable by carrying on -- carrying on
+    // means presenting an empty collection and then saving it over the real
+    // file. Tell the user which file and why, and stop.
+    dialog.showErrorBox(
+      'Valutique cannot open your collection',
+      err instanceof Error ? err.message : String(err)
+    );
+    app.exit(1);
+    return;
+  }
 
   collections = new CollectionService(db);
   fieldDefs = new FieldDefService(db);

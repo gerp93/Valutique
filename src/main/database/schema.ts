@@ -1,21 +1,99 @@
 import initSqlJs, { Database } from 'sql.js';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getEffectiveDbPath } from '../dbLocation';
+import { getEffectiveDbPath, isUsingDefaultLocation } from '../dbLocation';
 
 let dbInstance: Database | null = null;
 let currentDbPath: string | null = null;
 
+/** Thrown when the database exists but cannot be trusted to load. Fatal by design -- see readDatabaseFile. */
+export class DatabaseUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseUnavailableError';
+  }
+}
+
+/**
+ * Reads the database file, or returns null for a genuine first run.
+ *
+ * The distinction between "not there yet" and "there but unreadable" is the
+ * whole point of this function. `fs.existsSync` collapses the two -- it
+ * swallows every error and answers false -- so a permissions blip, a locked
+ * file, or an I/O error used to silently produce a brand-new empty database.
+ * That fails twice over: the user is told their collection is empty, and the
+ * next save writes the empty database straight over the real file.
+ *
+ * So only a true ENOENT at a default (never-configured) location counts as a
+ * first run. Anything else stops startup with an error the user can act on,
+ * leaving the file on disk untouched.
+ */
+function readDatabaseFile(dbPath: string, isConfigured: boolean): Buffer | null {
+  let buffer: Buffer;
+
+  try {
+    buffer = fs.readFileSync(dbPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+
+    if (code === 'ENOENT') {
+      // A path the user explicitly chose is not a first run -- they pointed us
+      // at a file that is supposed to exist, so its absence is a real problem.
+      if (isConfigured) {
+        throw new DatabaseUnavailableError(
+          `Valutique's database file is missing:\n\n${dbPath}\n\n` +
+            `If you moved it, point Valutique at the new location from Settings. ` +
+            `Nothing on disk has been changed.`
+        );
+      }
+      return null;
+    }
+
+    throw new DatabaseUnavailableError(
+      `Valutique could not read its database file:\n\n${dbPath}\n\n` +
+        `${code ?? 'Error'}: ${(err as Error).message}\n\n` +
+        `Starting with an empty collection would risk overwriting this file, so Valutique stopped instead. ` +
+        `Check that the file is readable and that no other copy of Valutique is running.`
+    );
+  }
+
+  // A zero-byte file is a truncated or half-written database, not an empty one.
+  // Loading it would look identical to losing everything.
+  if (buffer.length === 0) {
+    throw new DatabaseUnavailableError(
+      `Valutique's database file is empty, which usually means it was truncated:\n\n${dbPath}\n\n` +
+        `The file has been left as-is. Restore it from a backup, or point Valutique at another copy from Settings.`
+    );
+  }
+
+  return buffer;
+}
+
 export async function initDatabase(dbPath?: string): Promise<Database> {
   const SQL = await initSqlJs();
+  // An explicitly passed path is as deliberate as a configured one.
+  const isConfigured = dbPath !== undefined || !isUsingDefaultLocation();
   dbPath = dbPath ?? getEffectiveDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
+  const buffer = readDatabaseFile(dbPath, isConfigured);
+
   let db: Database;
 
-  if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
+  if (buffer) {
+    try {
+      db = new SQL.Database(buffer);
+      // sql.js does not parse the file header until the first statement runs,
+      // so a corrupt file constructs fine and only fails later, somewhere with
+      // no idea which file is at fault. Force the check here instead.
+      db.exec('PRAGMA schema_version');
+    } catch (err) {
+      throw new DatabaseUnavailableError(
+        `Valutique's database file could not be opened -- it may be corrupt:\n\n${dbPath}\n\n` +
+          `${(err as Error).message}\n\n` +
+          `The file has been left as-is. Restore it from a backup, or point Valutique at another copy from Settings.`
+      );
+    }
   } else {
     db = new SQL.Database();
   }
