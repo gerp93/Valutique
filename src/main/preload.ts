@@ -3,7 +3,7 @@ import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/co
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
 import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
-import { ImportAnalysis, ImportPlan } from '../shared/types/import';
+import { ImportAnalysis, ImportPlan, ImportProgress } from '../shared/types/import';
 import { UpdateSettingsInput } from '../shared/types/settings';
 import { CliLogEvent, QueueState } from '../shared/types/job';
 import { DuplicateSuggestion } from './duplicates';
@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld('valutique', {
     analyze: (collectionId: string, filePaths: string[], useAi: boolean) =>
       ipcRenderer.invoke('import:analyze', collectionId, filePaths, useAi),
     commit: (analysis: ImportAnalysis, plan: ImportPlan) => ipcRenderer.invoke('import:commit', analysis, plan),
+    onProgress: (callback: (progress: ImportProgress) => void) => {
+      const listener = (_: unknown, progress: ImportProgress) => callback(progress);
+      ipcRenderer.on('import:progress', listener);
+      return () => ipcRenderer.removeListener('import:progress', listener);
+    },
   },
 
   duplicates: {

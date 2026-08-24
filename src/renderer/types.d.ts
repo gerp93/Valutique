@@ -23,7 +23,7 @@ import {
 import { AiJob, BatchEstimate, CliLogEvent, QueueState } from '@shared/types/job';
 import { CliEnvironment, CliInstallResult, CliStatus } from '@shared/types/cli';
 import { UsageReport } from '@shared/types/usage';
-import { ImportAnalysis, ImportPlan, ImportResult } from '@shared/types/import';
+import { ImportAnalysis, ImportPlan, ImportProgress, ImportResult } from '@shared/types/import';
 import { AppSettings, DbLocationInfo, MediaLocationInfo, UpdateCheckResult, UpdateSettingsInput } from '@shared/types/settings';
 
 export interface DuplicateSuggestion {
@@ -77,6 +77,7 @@ export interface ValutiqueApi {
     pickFolder(): Promise<string[]>;
     analyze(collectionId: string, filePaths: string[], useAi: boolean): Promise<ImportAnalysis>;
     commit(analysis: ImportAnalysis, plan: ImportPlan): Promise<ImportResult>;
+    onProgress(callback: (progress: ImportProgress) => void): () => void;
   };
   duplicates: {
     findAll(collectionId: string): Promise<DuplicateSuggestion[]>;

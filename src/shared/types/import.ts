@@ -62,7 +62,14 @@ export interface ImportResult {
   itemIds: string[];
 }
 
-/** Progress pushed to the renderer while a large batch is being analysed. */
+/**
+ * Progress pushed to the renderer while a large batch is being analysed.
+ *
+ * Every phase here is slow and opaque without it: reading hashes, decodes,
+ * thumbnails and EXIF-parses each file; grouping may make an AI call; and
+ * committing copies bytes into the library. `total` is 0 for phases that
+ * aren't per-file, which the bar reads as indeterminate.
+ */
 export interface ImportProgress {
   phase: 'reading' | 'grouping' | 'committing' | 'done';
   completed: number;

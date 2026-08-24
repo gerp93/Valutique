@@ -5,9 +5,12 @@ import {
   AnalyzedPhoto,
   ImportAnalysis,
   ImportPlan,
+  ImportProgress,
   ImportResult,
   ProposedGroup,
 } from '../../shared/types/import';
+
+export type ProgressReporter = (progress: ImportProgress) => void;
 import { CollectionService } from '../database/collectionService';
 import { ItemService } from '../database/itemService';
 import { PhotoService } from '../database/photoService';
@@ -66,7 +69,7 @@ export class ImportService {
   async analyze(
     collectionId: string,
     filePaths: string[],
-    options: { useAi?: boolean } = {}
+    options: { useAi?: boolean; onProgress?: ProgressReporter } = {}
   ): Promise<ImportAnalysis> {
     const collection = this.collections.getById(collectionId);
     const itemNoun = collection?.itemNoun ?? 'item';
@@ -75,7 +78,22 @@ export class ImportService {
     const skippedPaths: string[] = [];
     const hashes: (bigint | null)[] = [];
 
+    let done = 0;
     for (const filePath of filePaths) {
+      // Reported before the work, so the name on screen is the file actually
+      // being chewed on rather than the one already finished.
+      options.onProgress?.({
+        phase: 'reading',
+        completed: done,
+        total: filePaths.length,
+        message: path.basename(filePath),
+      });
+      done += 1;
+      // Each file is a few hundred ms of synchronous decode work. Yielding
+      // between them lets the progress events actually reach the renderer
+      // instead of arriving in one burst at the end.
+      await new Promise((resolve) => setImmediate(resolve));
+
       if (!photoStore.isSupportedImage(filePath)) {
         skippedPaths.push(filePath);
         continue;
@@ -142,6 +160,14 @@ export class ImportService {
         : 'These photos have no capture times, so each one is its own item until you group them.';
 
     if (options.useAi !== false && sorted.length > 1) {
+      // A model call with no per-file granularity, so this reports as
+      // indeterminate rather than pretending to count something.
+      options.onProgress?.({
+        phase: 'grouping',
+        completed: 0,
+        total: 0,
+        message: `Working out which photos show the same ${itemNoun}…`,
+      });
       const aiGroups = await this.groupWithAi(sorted, timeGroups, itemNoun);
       if (aiGroups) {
         groups = aiGroups;
@@ -208,13 +234,16 @@ export class ImportService {
   }
 
   /** Writes the files into the library, creates the items, and queues the work. */
-  commit(analysis: ImportAnalysis, plan: ImportPlan): ImportResult {
+  commit(analysis: ImportAnalysis, plan: ImportPlan, onProgress?: ProgressReporter): ImportResult {
     const settings = this.settings.get();
 
     let itemsCreated = 0;
     let photosAdded = 0;
     let duplicatesSkipped = 0;
     const itemIds: string[] = [];
+
+    const totalToAdd = plan.groups.reduce((sum, group) => sum + group.length, 0);
+    let addedSoFar = 0;
 
     for (const group of plan.groups) {
       const usable = group
@@ -235,6 +264,13 @@ export class ImportService {
       itemIds.push(item.id);
 
       for (const photo of usable) {
+        onProgress?.({
+          phase: 'committing',
+          completed: addedSoFar,
+          total: totalToAdd,
+          message: photo.originalFilename,
+        });
+        addedSoFar += 1;
         try {
           const ingested = photoStore.ingest(photo.sourcePath);
           this.photos.addToItem(item.id, ingested, photo.originalFilename);

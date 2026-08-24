@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { ImportAnalysis, ImportResult } from '@shared/types/import';
+import { useEffect, useMemo, useState } from 'react';
+import { ImportAnalysis, ImportProgress, ImportResult } from '@shared/types/import';
 
 /**
  * The "dump 50 photos in" flow.
@@ -30,6 +30,11 @@ export default function ImportDialog({
   const [error, setError] = useState<string | null>(null);
   const [movingPhoto, setMovingPhoto] = useState<number | null>(null);
   const [reducedSizeAcknowledged, setReducedSizeAcknowledged] = useState(false);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
+
+  // Reading a folder takes long enough that silence reads as a hang, so the
+  // main process streams a line per file.
+  useEffect(() => window.valutique.import.onProgress(setProgress), []);
 
   const duplicateCount = useMemo(
     () => analysis?.photos.filter((photo) => photo.duplicateOfItemId).length ?? 0,
@@ -48,6 +53,7 @@ export default function ImportDialog({
 
     setBusy(true);
     setError(null);
+    setProgress({ phase: 'reading', completed: 0, total: paths.length, message: '' });
     try {
       const result = await window.valutique.import.analyze(collectionId, paths, autoGroup);
       setAnalysis(result);
@@ -58,6 +64,7 @@ export default function ImportDialog({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
@@ -65,6 +72,12 @@ export default function ImportDialog({
     if (!analysis) return;
     setBusy(true);
     setError(null);
+    setProgress({
+      phase: 'committing',
+      completed: 0,
+      total: groups.reduce((sum, group) => sum + group.length, 0),
+      message: '',
+    });
     try {
       const result = await window.valutique.import.commit(analysis, {
         collectionId,
@@ -76,6 +89,7 @@ export default function ImportDialog({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
+      setProgress(null);
     }
   };
 
@@ -138,6 +152,8 @@ export default function ImportDialog({
             </p>
 
             {error && <div className="banner banner-bad">{error}</div>}
+
+            {busy && <ImportProgressPanel progress={progress} />}
 
             <div className="modal-actions">
               <button className="btn" onClick={onClose} disabled={busy}>
@@ -297,6 +313,8 @@ export default function ImportDialog({
 
               {error && <div className="banner banner-bad">{error}</div>}
 
+              {busy && <ImportProgressPanel progress={progress} />}
+
               <div className="modal-actions">
                 <button className="btn" onClick={onClose} disabled={busy}>
                   Cancel
@@ -314,6 +332,60 @@ export default function ImportDialog({
           )
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Shown while the main process is grinding through files. The count is what
+ * actually reassures -- a bare spinner on a 200-photo folder is barely better
+ * than no spinner at all, because it never looks like it is getting anywhere.
+ */
+const PHASE_LABELS: Record<ImportProgress['phase'], string> = {
+  reading: 'Reading',
+  grouping: 'Grouping',
+  committing: 'Adding',
+  done: 'Finishing',
+};
+
+function ImportProgressPanel({ progress }: { progress: ImportProgress | null }) {
+  const total = progress?.total ?? 0;
+  const completed = progress?.completed ?? 0;
+  // total 0 means the phase has no per-file granularity (an AI call), so the
+  // bar runs indeterminate rather than sitting at a misleading 0%.
+  const determinate = total > 0;
+  const pct = determinate ? Math.round((completed / total) * 100) : 0;
+  const label = PHASE_LABELS[progress?.phase ?? 'reading'];
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="spinner" aria-hidden="true" />
+        <strong>
+          {label}
+          {determinate ? ` ${Math.min(completed + 1, total)} of ${total}` : ''}…
+        </strong>
+      </div>
+
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-valuenow={determinate ? pct : undefined}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={determinate ? 'progress-fill' : 'progress-fill progress-fill-indeterminate'}
+          style={determinate ? { width: `${pct}%` } : undefined}
+        />
+      </div>
+
+      <div className="text-muted" style={{ fontSize: 12, wordBreak: 'break-all', minHeight: 16 }}>
+        {progress?.message || 'Starting…'}
+      </div>
+      <p className="text-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+        Each photo is hashed and checked against what you already have, so a large folder takes a moment.
+      </p>
     </div>
   );
 }

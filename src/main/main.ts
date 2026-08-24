@@ -47,7 +47,7 @@ import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/co
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
 import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
-import { ImportAnalysis, ImportPlan } from '../shared/types/import';
+import { ImportAnalysis, ImportPlan, ImportProgress } from '../shared/types/import';
 import { AddPhotosResult, Photo, ReducedSizePhotoCheck } from '../shared/types/photo';
 import { UpdateSettingsInput, UpdateCheckResult } from '../shared/types/settings';
 
@@ -421,10 +421,17 @@ function registerIpcHandlers() {
       .map((name) => path.join(folder, name))
       .filter((filePath) => photoStore.isSupportedImage(filePath));
   });
+  // Importing a folder is slow enough to look hung, so both phases stream
+  // per-file progress to the dialog rather than blocking silently.
+  const reportImportProgress = (progress: ImportProgress) => {
+    mainWindow?.webContents.send('import:progress', progress);
+  };
   ipcMain.handle('import:analyze', (_, collectionId: string, filePaths: string[], useAi: boolean) =>
-    importer.analyze(collectionId, filePaths, { useAi })
+    importer.analyze(collectionId, filePaths, { useAi, onProgress: reportImportProgress })
   );
-  ipcMain.handle('import:commit', (_, analysis: ImportAnalysis, plan: ImportPlan) => importer.commit(analysis, plan));
+  ipcMain.handle('import:commit', (_, analysis: ImportAnalysis, plan: ImportPlan) =>
+    importer.commit(analysis, plan, reportImportProgress)
+  );
 
   // Duplicates
   ipcMain.handle('duplicates:findAll', (_, collectionId: string) => duplicates.findAll(collectionId));
