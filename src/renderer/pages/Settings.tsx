@@ -462,23 +462,15 @@ export default function Settings() {
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button
                 className="btn btn-small"
-                onClick={async () => {
-                  const chosen = await window.valutique.mediaLocation.browse();
-                  if (chosen) {
-                    await window.valutique.mediaLocation.set(chosen);
-                    await refresh();
-                  }
-                }}
-              >
-                Move it…
-              </button>
-              <button
-                className="btn btn-small"
                 onClick={() => void window.valutique.shell.showItemInFolder(mediaLocation.path)}
               >
                 Show in folder
               </button>
             </div>
+            <p className="text-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              Photos live beside the database and move with it. They are stored relative to it, so they cannot be
+              relocated on their own.
+            </p>
           </div>
         )}
       </div>

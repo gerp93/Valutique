@@ -151,10 +151,8 @@ contextBridge.exposeInMainWorld('valutique', {
   },
 
   mediaLocation: {
+    // Read-only: the media root is derived from the database location.
     get: () => ipcRenderer.invoke('mediaLocation:get'),
-    browse: () => ipcRenderer.invoke('mediaLocation:browse'),
-    set: (newPath: string) => ipcRenderer.invoke('mediaLocation:set', newPath),
-    resetToDefault: () => ipcRenderer.invoke('mediaLocation:resetToDefault'),
   },
 
   shell: {

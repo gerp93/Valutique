@@ -2,7 +2,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { app, nativeImage, protocol } from 'electron';
-import { readConfig, patchConfig, writeConfig } from './appConfig';
+import { readConfig, writeConfig } from './appConfig';
+import { getEffectiveDbPath } from './dbLocation';
 
 /**
  * The media library: photo bytes on disk, content-addressed by SHA-256.
@@ -20,37 +21,85 @@ export const PHOTO_PROTOCOL = 'valutique-photo';
 
 const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']);
 
-export function getDefaultMediaPath(): string {
-  return path.join(app.getPath('userData'), 'media');
+/**
+ * The media library always sits next to the database, in a `media` folder
+ * beside the .db file. It is derived, never configured.
+ *
+ * The database stores photos as paths relative to this root, so a database and
+ * a media library that can be pointed at different places independently are
+ * two halves of one thing that drift apart the moment either is moved. When
+ * they do, every photo silently resolves to nothing -- the collection loads
+ * fine and the images are simply gone. Deriving the location makes that state
+ * unrepresentable: move the database and the photos come with it.
+ */
+export function getMediaPathFor(dbPath: string): string {
+  return path.join(path.dirname(dbPath), 'media');
 }
 
 export function getEffectiveMediaPath(): string {
-  const configured = readConfig().mediaPath;
-  return configured && configured.trim() !== '' ? configured : getDefaultMediaPath();
-}
-
-export function isUsingDefaultMediaLocation(): boolean {
-  return !readConfig().mediaPath;
+  return getMediaPathFor(getEffectiveDbPath());
 }
 
 /**
- * Relocate the media library. Existing files are copied to the new location
- * first, because unlike the database a half-moved photo library shows up as
- * missing images rather than an error.
+ * Copies the library to sit beside a database that is about to move. Copy
+ * rather than move: a half-relocated photo library shows up as missing images
+ * rather than a loud failure, so the originals stay put until the new copy is
+ * known good.
  */
-export function setMediaPath(newPath: string): void {
-  const current = getEffectiveMediaPath();
-  fs.mkdirSync(newPath, { recursive: true });
-  if (fs.existsSync(current) && path.resolve(current) !== path.resolve(newPath)) {
-    copyDirectory(current, newPath);
-  }
-  patchConfig({ mediaPath: newPath });
+export function relocateLibraryForDbMove(oldDbPath: string, newDbPath: string): void {
+  const from = getMediaPathFor(oldDbPath);
+  const to = getMediaPathFor(newDbPath);
+  if (path.resolve(from) === path.resolve(to)) return;
+  if (!fs.existsSync(from)) return;
+
+  fs.mkdirSync(to, { recursive: true });
+  copyDirectory(from, to);
 }
 
-export function resetToDefaultMediaPath(): void {
+/**
+ * Brings pre-derivation installs into line. Two cases produce a library that
+ * is no longer where the database says it should be: an explicitly configured
+ * `mediaPath` from when that was settable, and a database that was moved back
+ * when the library stayed behind in userData. Both are copied into place once,
+ * and the stale config key is dropped.
+ */
+export function reconcileMediaLocation(): void {
   const config = readConfig();
-  delete config.mediaPath;
-  writeConfig(config);
+  const desired = getEffectiveMediaPath();
+
+  const legacyCandidates = [config.mediaPath, path.join(app.getPath('userData'), 'media')];
+
+  for (const legacy of legacyCandidates) {
+    if (!legacy || legacy.trim() === '') continue;
+    if (path.resolve(legacy) === path.resolve(desired)) break;
+    if (!fs.existsSync(legacy)) continue;
+    // Only adopt a legacy library when the derived location has nothing to
+    // lose -- never paper over a real library that is already in place.
+    if (hasAnyFile(desired)) break;
+    if (!hasAnyFile(legacy)) continue;
+
+    fs.mkdirSync(desired, { recursive: true });
+    copyDirectory(legacy, desired);
+    console.log(`Media library copied alongside the database: ${legacy} -> ${desired}`);
+    break;
+  }
+
+  if (config.mediaPath !== undefined) {
+    delete config.mediaPath;
+    writeConfig(config);
+  }
+}
+
+function hasAnyFile(dir: string): boolean {
+  if (!fs.existsSync(dir)) return false;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (hasAnyFile(path.join(dir, entry.name))) return true;
+    } else {
+      return true;
+    }
+  }
+  return false;
 }
 
 function copyDirectory(from: string, to: string): void {

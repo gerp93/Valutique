@@ -140,6 +140,10 @@ app.whenReady().then(async () => {
     return;
   }
 
+  // Runs after the database path is settled, since the media root derives from
+  // it. Brings installs predating that derivation back into line.
+  photoStore.reconcileMediaLocation();
+
   collections = new CollectionService(db);
   fieldDefs = new FieldDefService(db);
   photos = new PhotoService(db);
@@ -543,6 +547,10 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('dbLocation:set', (_, newPath: string) => {
     if (db) saveDatabase(db);
+    // Photos travel with the database -- they are stored as paths relative to
+    // a media root that is derived from the .db location, so leaving them
+    // behind would resolve every photo to nothing.
+    photoStore.relocateLibraryForDbMove(getEffectiveDbPath(), newPath);
     setDbPath(newPath);
     // An open sql.js database cannot be repointed at a new file, so a restart
     // is the honest way to adopt one.
@@ -552,35 +560,19 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('dbLocation:resetToDefault', () => {
     if (db) saveDatabase(db);
+    photoStore.relocateLibraryForDbMove(getEffectiveDbPath(), getDefaultDbPath());
     resetToDefaultDbPath();
     app.relaunch();
     app.exit();
     return { success: true };
   });
 
-  // Media library location
+  // Media library location -- read-only. It is derived from the database
+  // location rather than configured; see photoStore.getMediaPathFor.
   ipcMain.handle('mediaLocation:get', () => ({
     path: photoStore.getEffectiveMediaPath(),
-    isDefault: photoStore.isUsingDefaultMediaLocation(),
-    defaultPath: photoStore.getDefaultMediaPath(),
     ...photoStore.libraryStats(),
   }));
-  ipcMain.handle('mediaLocation:browse', async () => {
-    if (!mainWindow) return null;
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose where to store your photos',
-      properties: ['openDirectory', 'createDirectory'],
-    });
-    return result.canceled ? null : result.filePaths[0];
-  });
-  ipcMain.handle('mediaLocation:set', (_, newPath: string) => {
-    photoStore.setMediaPath(newPath);
-    return { success: true };
-  });
-  ipcMain.handle('mediaLocation:resetToDefault', () => {
-    photoStore.resetToDefaultMediaPath();
-    return { success: true };
-  });
 
   // Shell
   ipcMain.handle('shell:openExternal', (_, url: string) => {

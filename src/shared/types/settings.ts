@@ -30,10 +30,9 @@ export interface DbLocationInfo {
   defaultPath: string;
 }
 
+/** Read-only: the media root is derived from the database location, not configured. */
 export interface MediaLocationInfo {
   path: string;
-  isDefault: boolean;
-  defaultPath: string;
   fileCount: number;
   totalBytes: number;
 }

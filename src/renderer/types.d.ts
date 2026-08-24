@@ -134,9 +134,6 @@ export interface ValutiqueApi {
   };
   mediaLocation: {
     get(): Promise<MediaLocationInfo>;
-    browse(): Promise<string | null>;
-    set(newPath: string): Promise<{ success: boolean }>;
-    resetToDefault(): Promise<{ success: boolean }>;
   };
   shell: {
     openExternal(url: string): Promise<{ success: boolean }>;
