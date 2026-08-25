@@ -20,7 +20,8 @@ function App() {
             <Route path="/items/:itemId" element={<ItemDetail />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="/logs" element={<Logs />} />
-            <Route path="/settings" element={<Settings />} />
+            <Route path="/connectors" element={<Settings section="ai" />} />
+            <Route path="/settings" element={<Settings section="app" />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Layout>

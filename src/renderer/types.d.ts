@@ -23,7 +23,15 @@ import {
 import { AiJob, BatchEstimate, CliLogEvent, QueueState } from '@shared/types/job';
 import { CliEnvironment, CliInstallResult, CliStatus } from '@shared/types/cli';
 import { UsageReport } from '@shared/types/usage';
-import { FolderScan, ImportAnalysis, ImportPlan, ImportProgress, ImportResult } from '@shared/types/import';
+import {
+  FolderScan,
+  GroupingConnectorInfo,
+  ImportAnalysis,
+  ImportBatch,
+  ImportPlan,
+  ImportProgressEvent,
+  ImportResult,
+} from '@shared/types/import';
 import { AppSettings, FolderInspection, LibraryInfo, UpdateCheckResult, UpdateSettingsInput } from '@shared/types/settings';
 
 export interface DuplicateSuggestion {
@@ -75,9 +83,14 @@ export interface ValutiqueApi {
   import: {
     pickFiles(): Promise<string[]>;
     pickFolder(): Promise<FolderScan>;
-    analyze(collectionId: string, filePaths: string[], useAi: boolean): Promise<ImportAnalysis>;
+    groupingConnector(): Promise<GroupingConnectorInfo | null>;
+    start(collectionId: string, filePaths: string[], useAi: boolean): Promise<{ batchId: string }>;
+    pending(collectionId: string): Promise<ImportBatch | null>;
+    take(batchId: string): Promise<ImportAnalysis | null>;
+    discard(batchId: string): Promise<{ success: boolean }>;
+    onBatch(callback: (batch: ImportBatch) => void): () => void;
     commit(analysis: ImportAnalysis, plan: ImportPlan): Promise<ImportResult>;
-    onProgress(callback: (progress: ImportProgress) => void): () => void;
+    onProgress(callback: (progress: ImportProgressEvent) => void): () => void;
   };
   duplicates: {
     findAll(collectionId: string): Promise<DuplicateSuggestion[]>;

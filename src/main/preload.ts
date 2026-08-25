@@ -3,7 +3,7 @@ import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/co
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
 import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
-import { ImportAnalysis, ImportPlan, ImportProgress } from '../shared/types/import';
+import { ImportAnalysis, ImportBatch, ImportPlan, ImportProgressEvent } from '../shared/types/import';
 import { UpdateSettingsInput } from '../shared/types/settings';
 import { CliLogEvent, QueueState } from '../shared/types/job';
 import { DuplicateSuggestion } from './duplicates';
@@ -63,11 +63,20 @@ contextBridge.exposeInMainWorld('valutique', {
   import: {
     pickFiles: () => ipcRenderer.invoke('import:pickFiles'),
     pickFolder: () => ipcRenderer.invoke('import:pickFolder'),
-    analyze: (collectionId: string, filePaths: string[], useAi: boolean) =>
-      ipcRenderer.invoke('import:analyze', collectionId, filePaths, useAi),
+    groupingConnector: () => ipcRenderer.invoke('import:groupingConnector'),
+    start: (collectionId: string, filePaths: string[], useAi: boolean) =>
+      ipcRenderer.invoke('import:start', collectionId, filePaths, useAi),
+    pending: (collectionId: string) => ipcRenderer.invoke('import:pending', collectionId),
+    take: (batchId: string) => ipcRenderer.invoke('import:take', batchId),
+    discard: (batchId: string) => ipcRenderer.invoke('import:discard', batchId),
+    onBatch: (callback: (batch: ImportBatch) => void) => {
+      const listener = (_: unknown, batch: ImportBatch) => callback(batch);
+      ipcRenderer.on('import:batch', listener);
+      return () => ipcRenderer.removeListener('import:batch', listener);
+    },
     commit: (analysis: ImportAnalysis, plan: ImportPlan) => ipcRenderer.invoke('import:commit', analysis, plan),
-    onProgress: (callback: (progress: ImportProgress) => void) => {
-      const listener = (_: unknown, progress: ImportProgress) => callback(progress);
+    onProgress: (callback: (progress: ImportProgressEvent) => void) => {
+      const listener = (_: unknown, progress: ImportProgressEvent) => callback(progress);
       ipcRenderer.on('import:progress', listener);
       return () => ipcRenderer.removeListener('import:progress', listener);
     },

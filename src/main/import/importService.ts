@@ -77,6 +77,11 @@ export class ImportService {
     const photos: AnalyzedPhoto[] = [];
     const skippedPaths: string[] = [];
     const hashes: (bigint | null)[] = [];
+    // Built here, during the one pass that already has the decoded bytes in
+    // hand. Re-deriving these for the grouping call meant reading, hashing and
+    // decoding every file a second time -- twice the work, and for a HEIC that
+    // is a second full transcode.
+    const groupingThumbs: (AiImage | null)[] = [];
 
     let done = 0;
     for (const filePath of filePaths) {
@@ -109,6 +114,7 @@ export class ImportService {
         const captured = exif.capturedAt ?? safeMtime(filePath);
         const existingItemId = this.photos.findItemByHash(info.sha256);
         const preview = thumbnailFor(info.decoded, REVIEW_THUMBNAIL_EDGE);
+        groupingThumbs.push(thumbnailFor(info.decoded, THUMBNAIL_EDGE));
         const reducedSize = checkReducedSize(info.width, info.height, exif.hasCameraTag);
 
         photos.push({
@@ -149,6 +155,7 @@ export class ImportService {
 
     const sorted = order.map((entry) => entry.photo);
     const sortedHashes = order.map((entry) => hashes[entry.index]);
+    const sortedThumbs = order.map((entry) => groupingThumbs[entry.index]);
 
     flagNearDuplicates(sorted, sortedHashes);
 
@@ -170,7 +177,7 @@ export class ImportService {
         total: 0,
         message: `Working out which photos show the same ${itemNoun}…`,
       });
-      const aiGroups = await this.groupWithAi(sorted, timeGroups, itemNoun);
+      const aiGroups = await this.groupWithAi(sorted, sortedThumbs, timeGroups, itemNoun);
       if (aiGroups) {
         groups = aiGroups;
         groupingSource = 'ai';
@@ -190,6 +197,7 @@ export class ImportService {
    */
   private async groupWithAi(
     photos: AnalyzedPhoto[],
+    thumbnails: (AiImage | null)[],
     timeGroups: ProposedGroup[],
     itemNoun: string
   ): Promise<ProposedGroup[] | null> {
@@ -201,18 +209,7 @@ export class ImportService {
 
       for (let start = 0; start < photos.length; start += GROUPING_CHUNK_SIZE) {
         const chunk = photos.slice(start, start + GROUPING_CHUNK_SIZE);
-        // Decoded again rather than reusing the review thumbnail: grouping needs
-        // more detail than the grid does, and a HEIC cannot be read from its path.
-        const images = await Promise.all(
-          chunk.map(async (photo) => {
-            try {
-              const { decoded } = await photoStore.inspect(photo.sourcePath);
-              return thumbnailFor(decoded, THUMBNAIL_EDGE);
-            } catch {
-              return null;
-            }
-          })
-        );
+        const images = thumbnails.slice(start, start + GROUPING_CHUNK_SIZE);
 
         if (images.some((image) => image === null)) return null;
 

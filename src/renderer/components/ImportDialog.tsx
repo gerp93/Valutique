@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ImportAnalysis, ImportProgress, ImportResult } from '@shared/types/import';
+import { GroupingConnectorInfo, ImportAnalysis, ImportProgressEvent, ImportResult } from '@shared/types/import';
 
 /**
  * The "dump 50 photos in" flow.
@@ -12,29 +12,44 @@ import { ImportAnalysis, ImportProgress, ImportResult } from '@shared/types/impo
 export default function ImportDialog({
   collectionId,
   itemNoun,
+  initialAnalysis = null,
   onClose,
+  onStarted,
   onDone,
 }: {
   collectionId: string;
   itemNoun: string;
+  /** Set when reopening to review a batch that finished in the background. */
+  initialAnalysis?: ImportAnalysis | null;
   onClose: () => void;
+  /** Reading has begun; the dialog gets out of the way and the page tracks it. */
+  onStarted: (batchId: string) => void;
   onDone: (result: ImportResult) => void;
 }) {
-  const [analysis, setAnalysis] = useState<ImportAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState<ImportAnalysis | null>(initialAnalysis);
   const [groups, setGroups] = useState<number[][]>([]);
   const [autoGroup, setAutoGroup] = useState(true);
   const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [autoProcess, setAutoProcess] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<'choose' | 'review'>('choose');
+  const [phase, setPhase] = useState<'choose' | 'review'>(initialAnalysis ? 'review' : 'choose');
   const [error, setError] = useState<string | null>(null);
   const [movingPhoto, setMovingPhoto] = useState<number | null>(null);
   const [reducedSizeAcknowledged, setReducedSizeAcknowledged] = useState(false);
-  const [progress, setProgress] = useState<ImportProgress | null>(null);
+  const [progress, setProgress] = useState<ImportProgressEvent | null>(null);
+  const [groupingConnector, setGroupingConnector] = useState<GroupingConnectorInfo | null>(null);
+  const [connectorLoaded, setConnectorLoaded] = useState(false);
 
-  // Reading a folder takes long enough that silence reads as a hang, so the
-  // main process streams a line per file.
   useEffect(() => window.valutique.import.onProgress(setProgress), []);
+
+  // Grouping is the one part of an import that spends money, so which connector
+  // would run it is shown before the user commits to anything.
+  useEffect(() => {
+    void window.valutique.import.groupingConnector().then((info) => {
+      setGroupingConnector(info);
+      setConnectorLoaded(true);
+    });
+  }, []);
 
   const duplicateCount = useMemo(
     () => analysis?.photos.filter((photo) => photo.duplicateOfItemId).length ?? 0,
@@ -71,20 +86,17 @@ export default function ImportDialog({
       paths = scan.paths;
     }
 
+    // Hand the work to the main process and close. Reading and grouping a large
+    // folder takes minutes, and holding a modal over the whole app for it is
+    // the wrong trade -- the page tracks it from here.
     setBusy(true);
     setError(null);
-    setProgress({ phase: 'reading', completed: 0, total: paths.length, message: '' });
     try {
-      const result = await window.valutique.import.analyze(collectionId, paths, autoGroup);
-      setAnalysis(result);
-      setGroups(result.groups.map((group) => group.photoIndexes));
-      setReducedSizeAcknowledged(false);
-      setPhase('review');
+      const { batchId } = await window.valutique.import.start(collectionId, paths, autoGroup);
+      onStarted(batchId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       setBusy(false);
-      setProgress(null);
     }
   };
 
@@ -166,9 +178,17 @@ export default function ImportDialog({
               <label htmlFor="auto-group">Group photos of the same {itemNoun} automatically</label>
             </div>
             <p className="field-hint" style={{ marginTop: -4, marginBottom: 16 }}>
-              {autoGroup
-                ? 'Uses capture times and a single quick look at the photos. Costs about a cent for a large batch, or nothing on a subscription connector.'
-                : `Every photo becomes its own ${itemNoun}. Faster, and right if you shot one photo per piece.`}
+              {!autoGroup
+                ? `Every photo becomes its own ${itemNoun}. Faster, and right if you shot one photo per piece.`
+                : !connectorLoaded
+                ? 'Checking which connector would do the grouping…'
+                : groupingConnector
+                ? `Uses capture times, then one look at the photos with ${groupingConnector.name}` +
+                  (groupingConnector.free
+                    ? ' — free on that connector.'
+                    : ' — about a cent for a large batch.')
+                : 'No connector set up for this can look at photos, so grouping will use capture times only. ' +
+                  'Nothing will be spent.'}
             </p>
 
             {error && <div className="banner banner-bad">{error}</div>}
@@ -183,7 +203,7 @@ export default function ImportDialog({
                 Choose a folder
               </button>
               <button className="btn btn-primary" onClick={() => void pick('files')} disabled={busy}>
-                {busy ? 'Reading photos…' : 'Choose photos'}
+                {busy ? 'Starting…' : 'Choose photos'}
               </button>
             </div>
           </>

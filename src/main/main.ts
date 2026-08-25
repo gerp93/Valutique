@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { randomUUID } from 'crypto';
 import { autoUpdater } from 'electron-updater';
 import * as dns from 'dns';
 import * as fs from 'fs';
@@ -50,7 +51,7 @@ import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/co
 import { CreateFieldDefInput, UpdateFieldDefInput } from '../shared/types/fieldDef';
 import { CreateItemInput, ItemFilter, UpdateItemInput } from '../shared/types/item';
 import { AiTask, AiTier, CreateConnectorInput, UpdateConnectorInput } from '../shared/types/connector';
-import { ImportAnalysis, ImportPlan, ImportProgress } from '../shared/types/import';
+import { ImportAnalysis, ImportBatch, ImportPlan } from '../shared/types/import';
 import { AddPhotosResult, Photo, ReducedSizePhotoCheck } from '../shared/types/photo';
 import { UpdateSettingsInput, UpdateCheckResult } from '../shared/types/settings';
 
@@ -96,6 +97,17 @@ let runner: JobRunner;
 let estimator: BatchEstimator;
 let importer: ImportService;
 let duplicates: DuplicateDetector;
+
+/** Strips the held analysis; the renderer fetches that separately with import:take. */
+function toBatchState(batch: ImportBatch & { analysis: ImportAnalysis | null }): ImportBatch {
+  return {
+    batchId: batch.batchId,
+    collectionId: batch.collectionId,
+    status: batch.status,
+    progress: batch.progress,
+    error: batch.error,
+  };
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -443,16 +455,93 @@ function registerIpcHandlers() {
 
     return { folder, paths, skipped };
   });
-  // Importing a folder is slow enough to look hung, so both phases stream
-  // per-file progress to the dialog rather than blocking silently.
-  const reportImportProgress = (progress: ImportProgress) => {
-    mainWindow?.webContents.send('import:progress', progress);
+  // Reading and grouping a folder takes long enough that holding a modal open
+  // for it is the wrong shape: the batch runs here, the dialog closes, and the
+  // renderer is told when there is something to review. State is in memory --
+  // a batch does not survive a restart.
+  const batches = new Map<string, ImportBatch & { analysis: ImportAnalysis | null }>();
+
+  const publishBatch = (batchId: string) => {
+    const batch = batches.get(batchId);
+    if (batch) mainWindow?.webContents.send('import:batch', toBatchState(batch));
   };
-  ipcMain.handle('import:analyze', (_, collectionId: string, filePaths: string[], useAi: boolean) =>
-    importer.analyze(collectionId, filePaths, { useAi, onProgress: reportImportProgress })
-  );
+
+  // Named in the dialog before anything runs: grouping is the one part of an
+  // import that spends money, and the app shows cost before committing.
+  ipcMain.handle('import:groupingConnector', () => {
+    const connector = connectors.resolveConnector('identify');
+    if (!connector || !connector.supportsVision) return null;
+    return {
+      name: connector.name,
+      billingMode: connector.billingMode,
+      free: connector.billingMode !== 'api_credits',
+    };
+  });
+
+  ipcMain.handle('import:start', (_, collectionId: string, filePaths: string[], useAi: boolean) => {
+    const batchId = randomUUID();
+    batches.set(batchId, {
+      batchId,
+      collectionId,
+      status: 'running',
+      progress: { phase: 'reading', completed: 0, total: filePaths.length, message: '' },
+      error: null,
+      analysis: null,
+    });
+
+    void importer
+      .analyze(collectionId, filePaths, {
+        useAi,
+        onProgress: (progress) => {
+          const batch = batches.get(batchId);
+          if (!batch) return;
+          batch.progress = progress;
+          mainWindow?.webContents.send('import:progress', { batchId, ...progress });
+        },
+      })
+      .then((analysis) => {
+        const batch = batches.get(batchId);
+        if (!batch) return;
+        batch.analysis = analysis;
+        batch.status = 'done';
+        batch.progress = null;
+        publishBatch(batchId);
+      })
+      .catch((err: unknown) => {
+        const batch = batches.get(batchId);
+        if (!batch) return;
+        batch.status = 'failed';
+        batch.error = err instanceof Error ? err.message : String(err);
+        batch.progress = null;
+        publishBatch(batchId);
+      });
+
+    return { batchId };
+  });
+
+  /** Any finished batch for this collection, so navigating away and back does not lose it. */
+  ipcMain.handle('import:pending', (_, collectionId: string) => {
+    for (const batch of batches.values()) {
+      if (batch.collectionId === collectionId) return toBatchState(batch);
+    }
+    return null;
+  });
+
+  ipcMain.handle('import:take', (_, batchId: string) => {
+    const batch = batches.get(batchId);
+    if (!batch || batch.status !== 'done') return null;
+    batches.delete(batchId);
+    return batch.analysis;
+  });
+
+  ipcMain.handle('import:discard', (_, batchId: string) => {
+    batches.delete(batchId);
+    return { success: true };
+  });
   ipcMain.handle('import:commit', (_, analysis: ImportAnalysis, plan: ImportPlan) =>
-    importer.commit(analysis, plan, reportImportProgress)
+    importer.commit(analysis, plan, (progress) =>
+      mainWindow?.webContents.send('import:progress', { batchId: '', ...progress })
+    )
   );
 
   // Duplicates

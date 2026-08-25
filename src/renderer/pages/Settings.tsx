@@ -23,7 +23,12 @@ import { THEME_LABELS } from '../utils/themes';
 import { useTheme } from '../context/ThemeContext';
 import { formatBytes } from '../utils/format';
 
-export default function Settings() {
+/**
+ * Serves two routes. Connectors and Settings were one tabbed page, but the
+ * connector side is where the real configuration lives and deserves its own
+ * place in the nav rather than being a tab inside something else.
+ */
+export default function Settings({ section = 'app' }: { section?: 'ai' | 'app' }) {
   const [connectors, setConnectors] = useState<AiConnector[]>([]);
   const [bindings, setBindings] = useState<AiTaskBinding[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -37,7 +42,6 @@ export default function Settings() {
   const [testing, setTesting] = useState<string | null>(null);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [cliEnvironment, setCliEnvironment] = useState<CliEnvironment | null>(null);
-  const [tab, setTab] = useState<'ai' | 'app'>('ai');
   const { currentTheme, setTheme, availableThemes } = useTheme();
 
   // Probing spawns processes, so it runs once on mount and after an install
@@ -109,21 +113,16 @@ export default function Settings() {
     <>
       <div className="page-header">
         <div>
-          <h1>Settings</h1>
-          <p className="subtitle">Connectors, processing, and where your data lives.</p>
+          <h1>{section === 'ai' ? 'Connectors' : 'Settings'}</h1>
+          <p className="subtitle">
+            {section === 'ai'
+              ? 'Which AI runs each task, and what it costs.'
+              : 'Where your data lives, appearance, and updates.'}
+          </p>
         </div>
       </div>
 
-      <div className="tab-bar">
-        <button className={`tab-button${tab === 'ai' ? ' active' : ''}`} onClick={() => setTab('ai')}>
-          AI Settings
-        </button>
-        <button className={`tab-button${tab === 'app' ? ' active' : ''}`} onClick={() => setTab('app')}>
-          App Settings
-        </button>
-      </div>
-
-      {tab === 'ai' && (
+      {section === 'ai' && (
       <>
       {!encryptionOk && (
         <div className="banner banner-warn">
@@ -431,7 +430,7 @@ export default function Settings() {
       </>
       )}
 
-      {tab === 'app' && (
+      {section === 'app' && (
       <>
       {/* --- storage --- */}
       <div className="card">

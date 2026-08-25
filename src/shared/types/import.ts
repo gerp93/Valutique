@@ -1,3 +1,25 @@
+/**
+ * Which connector automatic grouping would actually use. Null when none can
+ * look at photos, in which case grouping silently falls back to capture time --
+ * worth saying out loud, since it changes both the result and the cost.
+ */
+export interface GroupingConnectorInfo {
+  name: string;
+  billingMode: string;
+  free: boolean;
+}
+
+/** A running or finished analysis, tracked in the main process so the dialog need not stay open. */
+export interface ImportBatch {
+  batchId: string;
+  collectionId: string;
+  status: 'running' | 'done' | 'failed';
+  progress: ImportProgress | null;
+  error: string | null;
+}
+
+export type ImportProgressEvent = ImportProgress & { batchId: string };
+
 /** Result of scanning a chosen folder, including what was passed over and why. */
 export interface FolderScan {
   folder: string;

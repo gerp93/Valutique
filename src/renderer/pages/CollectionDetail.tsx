@@ -4,6 +4,7 @@ import { Collection } from '@shared/types/collection';
 import { FieldDef } from '@shared/types/fieldDef';
 import { CONDITION_LABELS, ItemListEntry } from '@shared/types/item';
 import { AiTask } from '@shared/types/connector';
+import { ImportAnalysis, ImportBatch, ImportProgressEvent } from '@shared/types/import';
 import ImportDialog from '../components/ImportDialog';
 import RunDialog from '../components/RunDialog';
 import PhotoImage from '../components/PhotoImage';
@@ -27,9 +28,15 @@ export default function CollectionDetail() {
   const [appraisalFilter, setAppraisalFilter] = useState<'' | 'appraised' | 'unappraised'>('');
 
   const [importing, setImporting] = useState(false);
+  // A batch reading and grouping in the main process. The dialog closes as soon
+  // as one starts, so this is what keeps the page aware of it.
+  const [batch, setBatch] = useState<ImportBatch | null>(null);
+  const [batchProgress, setBatchProgress] = useState<ImportProgressEvent | null>(null);
+  const [reviewAnalysis, setReviewAnalysis] = useState<ImportAnalysis | null>(null);
   const [runTask, setRunTask] = useState<AiTask | null>(null);
   const [editingFields, setEditingFields] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
 
   const refresh = useCallback(async () => {
     if (!collectionId) return;
@@ -94,6 +101,43 @@ export default function CollectionDetail() {
   };
 
   if (!collection) return <p className="text-muted">Loading…</p>;
+
+  useEffect(() => {
+    const offBatch = window.valutique.import.onBatch((next) => {
+      if (next.collectionId !== collectionId) return;
+      setBatch(next);
+      if (next.status !== 'running') setBatchProgress(null);
+    });
+    const offProgress = window.valutique.import.onProgress(setBatchProgress);
+    return () => {
+      offBatch();
+      offProgress();
+    };
+  }, [collectionId]);
+
+  // A batch that finished while the user was on another page is still waiting
+  // in the main process, so it is picked back up on arrival rather than lost.
+  useEffect(() => {
+    if (!collectionId) return;
+    void window.valutique.import.pending(collectionId).then((found) => {
+      if (found) setBatch(found);
+    });
+  }, [collectionId]);
+
+  const openReview = async () => {
+    if (!batch || batch.status !== 'done') return;
+    const analysis = await window.valutique.import.take(batch.batchId);
+    setBatch(null);
+    if (!analysis) return;
+    setReviewAnalysis(analysis);
+    setImporting(true);
+  };
+
+  const dismissBatch = async () => {
+    if (!batch) return;
+    await window.valutique.import.discard(batch.batchId);
+    setBatch(null);
+  };
 
   return (
     <>
@@ -303,13 +347,90 @@ export default function CollectionDetail() {
         </div>
       )}
 
+      {batch && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          {batch.status === 'running' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span className="spinner" aria-hidden="true" />
+                <strong>
+                  {batchProgress?.phase === 'grouping'
+                    ? 'Grouping photos'
+                    : `Reading photos${
+                        batchProgress && batchProgress.total > 0
+                          ? ` — ${Math.min(batchProgress.completed + 1, batchProgress.total)} of ${batchProgress.total}`
+                          : ''
+                      }`}
+                  …
+                </strong>
+              </div>
+              <div className="progress-track">
+                <div
+                  className={
+                    batchProgress && batchProgress.total > 0
+                      ? 'progress-fill'
+                      : 'progress-fill progress-fill-indeterminate'
+                  }
+                  style={
+                    batchProgress && batchProgress.total > 0
+                      ? { width: `${Math.round((batchProgress.completed / batchProgress.total) * 100)}%` }
+                      : undefined
+                  }
+                />
+              </div>
+              <div className="text-muted" style={{ fontSize: 12, wordBreak: 'break-all', minHeight: 16 }}>
+                {batchProgress?.message || 'Starting…'}
+              </div>
+              <p className="text-muted" style={{ fontSize: 12, marginTop: 6, marginBottom: 0 }}>
+                Carry on using Valutique — you'll be asked to review when this is ready.
+              </p>
+            </>
+          )}
+
+          {batch.status === 'done' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <strong>Your photos are ready to review.</strong>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-small" onClick={() => void openReview()}>
+                  Review now
+                </button>
+                <button className="btn btn-small" onClick={() => void dismissBatch()}>
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+
+          {batch.status === 'failed' && (
+            <div className="banner banner-bad" style={{ margin: 0 }}>
+              That import could not be read: {batch.error}
+              <div style={{ marginTop: 8 }}>
+                <button className="btn btn-small" onClick={() => void dismissBatch()}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {importing && collectionId && (
         <ImportDialog
           collectionId={collectionId}
           itemNoun={itemNoun}
-          onClose={() => setImporting(false)}
+          initialAnalysis={reviewAnalysis}
+          onClose={() => {
+            setImporting(false);
+            setReviewAnalysis(null);
+          }}
+          onStarted={() => {
+            // Reading continues in the background; the strip below tracks it.
+            setImporting(false);
+            setReviewAnalysis(null);
+          }}
           onDone={(result) => {
             setImporting(false);
+            setReviewAnalysis(null);
             setToast(
               `Added ${result.itemsCreated} ${result.itemsCreated === 1 ? itemNoun : `${itemNoun}s`} from ${
                 result.photosAdded
