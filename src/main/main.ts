@@ -35,12 +35,15 @@ import { checkReducedSize } from './import/reducedSizeDetector';
 import * as photoStore from './photoStore';
 import { detectCli, detectEnvironment, installCli, listRemoteModels } from './cliDetect';
 import {
-  getDefaultDbPath,
-  getEffectiveDbPath,
-  isUsingDefaultLocation,
-  resetToDefaultDbPath,
-  setDbPath,
-} from './dbLocation';
+  getDefaultLibraryPath,
+  getEffectiveLibraryPath,
+  inspectFolder,
+  isUsingDefaultLibrary,
+  libraryStats,
+  migrateLegacyLayout,
+  resetToDefaultLibrary,
+  setLibraryPath,
+} from './library';
 import { isEncryptionAvailable } from './secrets';
 
 import { CreateCollectionInput, UpdateCollectionInput } from '../shared/types/collection';
@@ -127,22 +130,21 @@ app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
 
   try {
+    // Settles where the database lives before opening it, so a pre-library
+    // install is brought up to date first.
+    migrateLegacyLayout();
     db = await initDatabase();
   } catch (err) {
     // An unreadable database is not recoverable by carrying on -- carrying on
     // means presenting an empty collection and then saving it over the real
     // file. Tell the user which file and why, and stop.
     dialog.showErrorBox(
-      'Valutique cannot open your collection',
+      'Valutique cannot open your library',
       err instanceof Error ? err.message : String(err)
     );
     app.exit(1);
     return;
   }
-
-  // Runs after the database path is settled, since the media root derives from
-  // it. Brings installs predating that derivation back into line.
-  photoStore.reconcileMediaLocation();
 
   collections = new CollectionService(db);
   fieldDefs = new FieldDefService(db);
@@ -348,7 +350,7 @@ function registerIpcHandlers() {
   // ImportService: that pipeline exists to work out which photos belong to
   // which item, a question that's already answered here -- the user opened
   // this exact item and is dropping more angles of the same physical thing.
-  ipcMain.handle('photos:addToItem', (_, itemId: string, filePaths: string[]): AddPhotosResult => {
+  ipcMain.handle('photos:addToItem', async (_, itemId: string, filePaths: string[]): Promise<AddPhotosResult> => {
     const added: Photo[] = [];
     const failed: { fileName: string; error: string }[] = [];
 
@@ -359,7 +361,7 @@ function registerIpcHandlers() {
         continue;
       }
       try {
-        const ingested = photoStore.ingest(filePath);
+        const ingested = await photoStore.ingest(filePath);
         added.push(photos.addToItem(itemId, ingested, fileName));
       } catch (err) {
         // One unreadable file in the batch shouldn't drop the rest, but the
@@ -376,14 +378,14 @@ function registerIpcHandlers() {
   // Checked before photos:addToItem actually ingests anything, so the
   // renderer can warn about likely reduced-size copies (iPhoto/Photos
   // exports, etc.) and get the user to acknowledge before proceeding.
-  ipcMain.handle('photos:checkReducedSize', (_, filePaths: string[]): ReducedSizePhotoCheck[] => {
+  ipcMain.handle('photos:checkReducedSize', async (_, filePaths: string[]): Promise<ReducedSizePhotoCheck[]> => {
     const flagged: ReducedSizePhotoCheck[] = [];
 
     for (const filePath of filePaths) {
       if (!photoStore.isSupportedImage(filePath)) continue;
       try {
         const buffer = fs.readFileSync(filePath);
-        const info = photoStore.inspect(filePath);
+        const info = await photoStore.inspect(filePath, buffer);
         const exif = readExifSummary(buffer);
         const check = checkReducedSize(info.width, info.height, exif.hasCameraTag);
         if (check.looksReduced) {
@@ -403,7 +405,7 @@ function registerIpcHandlers() {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Add photos',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'gif', 'bmp'] }],
     });
     return result.canceled ? [] : result.filePaths;
   });
@@ -415,11 +417,31 @@ function registerIpcHandlers() {
     });
     if (result.canceled || result.filePaths.length === 0) return [];
 
+    // Recursive: "add every photo in a folder" means the folder, not just its
+    // top level -- exports from Photos and iPhoto routinely nest by date.
     const folder = result.filePaths[0];
-    return fs
-      .readdirSync(folder)
-      .map((name) => path.join(folder, name))
-      .filter((filePath) => photoStore.isSupportedImage(filePath));
+    const paths: string[] = [];
+    let skipped = 0;
+
+    const walk = (dir: string, depth: number) => {
+      if (depth > 8) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full, depth + 1);
+        else if (photoStore.isSupportedImage(full)) paths.push(full);
+        else skipped += 1;
+      }
+    };
+    walk(folder, 0);
+
+    return { folder, paths, skipped };
   });
   // Importing a folder is slow enough to look hung, so both phases stream
   // per-file progress to the dialog rather than blocking silently.
@@ -528,58 +550,56 @@ function registerIpcHandlers() {
   ipcMain.handle('settings:update', (_, input: UpdateSettingsInput) => settings.update(input));
   ipcMain.handle('settings:encryptionAvailable', () => isEncryptionAvailable());
 
-  // Database location
-  ipcMain.handle('dbLocation:get', () => ({
-    path: getEffectiveDbPath(),
-    isDefault: isUsingDefaultLocation(),
-    defaultPath: getDefaultDbPath(),
+  // Library location -- one folder holding the database and its photos.
+  ipcMain.handle('library:get', () => ({
+    path: getEffectiveLibraryPath(),
+    isDefault: isUsingDefaultLibrary(),
+    defaultPath: getDefaultLibraryPath(),
+    ...libraryStats(),
   }));
-  ipcMain.handle('dbLocation:browseExisting', async () => {
+  ipcMain.handle('library:browse', async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose an existing Valutique database file',
-      properties: ['openFile'],
-      filters: [{ name: 'SQLite Database', extensions: ['db', 'sqlite', 'sqlite3'] }],
+      title: 'Choose a folder for your Valutique library',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Use this folder',
     });
     return result.canceled ? null : result.filePaths[0];
   });
-  ipcMain.handle('dbLocation:browseNew', async () => {
-    if (!mainWindow) return null;
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Choose where to store the Valutique database',
-      defaultPath: 'valutique.db',
-      filters: [{ name: 'SQLite Database', extensions: ['db'] }],
-    });
-    return result.canceled ? null : result.filePath ?? null;
+  // Reported before committing, so the user is warned about claiming a folder
+  // that already belongs to something else rather than finding out after.
+  ipcMain.handle('library:inspect', (_, target: string) => {
+    try {
+      return inspectFolder(target);
+    } catch (err) {
+      return { kind: 'occupied' as const, detail: err instanceof Error ? err.message : String(err) };
+    }
   });
-  ipcMain.handle('dbLocation:set', (_, newPath: string) => {
-    if (db) saveDatabase(db);
-    // Photos travel with the database -- they are stored as paths relative to
-    // a media root that is derived from the .db location, so leaving them
-    // behind would resolve every photo to nothing.
-    photoStore.relocateLibraryForDbMove(getEffectiveDbPath(), newPath);
-    setDbPath(newPath);
-    // An open sql.js database cannot be repointed at a new file, so a restart
+  ipcMain.handle('library:set', (_, newPath: string) => {
+    try {
+      if (db) saveDatabase(db);
+      setLibraryPath(newPath);
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    // An open sql.js database cannot be repointed at another file, so a restart
     // is the honest way to adopt one.
     app.relaunch();
     app.exit();
     return { success: true };
   });
-  ipcMain.handle('dbLocation:resetToDefault', () => {
-    if (db) saveDatabase(db);
-    photoStore.relocateLibraryForDbMove(getEffectiveDbPath(), getDefaultDbPath());
-    resetToDefaultDbPath();
+  ipcMain.handle('library:resetToDefault', () => {
+    try {
+      if (db) saveDatabase(db);
+      setLibraryPath(getDefaultLibraryPath());
+      resetToDefaultLibrary();
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
     app.relaunch();
     app.exit();
     return { success: true };
   });
-
-  // Media library location -- read-only. It is derived from the database
-  // location rather than configured; see photoStore.getMediaPathFor.
-  ipcMain.handle('mediaLocation:get', () => ({
-    path: photoStore.getEffectiveMediaPath(),
-    ...photoStore.libraryStats(),
-  }));
 
   // Shell
   ipcMain.handle('shell:openExternal', (_, url: string) => {

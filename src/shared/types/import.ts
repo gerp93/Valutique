@@ -1,3 +1,11 @@
+/** Result of scanning a chosen folder, including what was passed over and why. */
+export interface FolderScan {
+  folder: string;
+  paths: string[];
+  /** Files found but not readable as images -- the number that makes "nothing happened" explicable. */
+  skipped: number;
+}
+
 export interface AnalyzedPhoto {
   sourcePath: string;
   originalFilename: string;

@@ -24,17 +24,22 @@ export type UpdateSettingsInput = Partial<Omit<AppSettings, 'hasEbayCredentials'
   ebayClientSecret?: string | null;
 };
 
-export interface DbLocationInfo {
+/** The library folder: database and photos together. See main/library.ts. */
+export interface LibraryInfo {
   path: string;
   isDefault: boolean;
   defaultPath: string;
+  photoCount: number;
+  photoBytes: number;
+  dbBytes: number;
 }
 
-/** Read-only: the media root is derived from the database location, not configured. */
-export interface MediaLocationInfo {
-  path: string;
-  fileCount: number;
-  totalBytes: number;
+export type FolderKind = 'library' | 'empty' | 'occupied';
+
+/** Verdict on a folder the user is considering, so they are warned before it is claimed. */
+export interface FolderInspection {
+  kind: FolderKind;
+  detail: string;
 }
 
 export interface UpdateCheckResult {

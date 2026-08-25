@@ -17,7 +17,7 @@ import {
 } from '@shared/types/connector';
 import { CliEnvironment, CliInstallResult, CliStatus } from '@shared/types/cli';
 import { CUSTOM_MODEL, findModel, modelsFor, tokenizeArgs, validateCliArgs } from '@shared/modelCatalog';
-import { AppSettings, DbLocationInfo, MediaLocationInfo, UpdateCheckResult } from '@shared/types/settings';
+import { AppSettings, LibraryInfo, UpdateCheckResult } from '@shared/types/settings';
 import { BILLING_MODE_BADGES, PROVIDER_TEMPLATES, templateFor } from '@shared/providerTemplates';
 import { THEME_LABELS } from '../utils/themes';
 import { useTheme } from '../context/ThemeContext';
@@ -27,8 +27,9 @@ export default function Settings() {
   const [connectors, setConnectors] = useState<AiConnector[]>([]);
   const [bindings, setBindings] = useState<AiTaskBinding[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [dbLocation, setDbLocation] = useState<DbLocationInfo | null>(null);
-  const [mediaLocation, setMediaLocation] = useState<MediaLocationInfo | null>(null);
+  const [library, setLibrary] = useState<LibraryInfo | null>(null);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [movingLibrary, setMovingLibrary] = useState(false);
   const [encryptionOk, setEncryptionOk] = useState(true);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AiConnector | null>(null);
@@ -46,20 +47,42 @@ export default function Settings() {
   };
 
   const refresh = async () => {
-    const [nextConnectors, nextBindings, nextSettings, nextDb, nextMedia, encryption] = await Promise.all([
+    const [nextConnectors, nextBindings, nextSettings, nextLibrary, encryption] = await Promise.all([
       window.valutique.connectors.getAll(),
       window.valutique.connectors.getBindings(),
       window.valutique.settings.get(),
-      window.valutique.dbLocation.get(),
-      window.valutique.mediaLocation.get(),
+      window.valutique.library.get(),
       window.valutique.settings.encryptionAvailable(),
     ]);
     setConnectors(nextConnectors);
     setBindings(nextBindings);
     setSettings(nextSettings);
-    setDbLocation(nextDb);
-    setMediaLocation(nextMedia);
+    setLibrary(nextLibrary);
     setEncryptionOk(encryption);
+  };
+
+  /**
+   * Warns before claiming a folder that already belongs to something else --
+   * the app will add its database, media/ and settings file alongside whatever
+   * is in there.
+   */
+  const chooseLibrary = async () => {
+    setLibraryError(null);
+    const chosen = await window.valutique.library.browse();
+    if (!chosen) return;
+
+    const verdict = await window.valutique.library.inspect(chosen);
+    if (verdict.kind === 'occupied') {
+      setLibraryError(verdict.detail);
+      return;
+    }
+
+    setMovingLibrary(true);
+    const result = await window.valutique.library.set(chosen);
+    if (!result.success) {
+      setLibraryError(result.error ?? 'Could not move the library.');
+      setMovingLibrary(false);
+    }
   };
 
   useEffect(() => {
@@ -418,58 +441,54 @@ export default function Settings() {
           and stored in your system keychain, so syncing your collection never syncs your credentials.
         </p>
 
-        {dbLocation && (
+        {library && (
           <div className="field">
-            <label>Database</label>
+            <label>Library</label>
             <div className="text-muted" style={{ fontSize: 13, wordBreak: 'break-all' }}>
-              {dbLocation.path}
+              {library.path}
             </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button
-                className="btn btn-small"
-                onClick={async () => {
-                  const chosen = await window.valutique.dbLocation.browseNew();
-                  if (chosen) await window.valutique.dbLocation.set(chosen);
-                }}
-              >
-                Move it…
+            <div className="text-muted" style={{ fontSize: 13, marginTop: 2 }}>
+              {library.photoCount} {library.photoCount === 1 ? 'photo' : 'photos'} ·{' '}
+              {formatBytes(library.photoBytes)} · database {formatBytes(library.dbBytes)}
+            </div>
+
+            {libraryError && (
+              <div className="banner banner-bad" style={{ marginTop: 10 }}>
+                {libraryError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <button className="btn btn-small" disabled={movingLibrary} onClick={() => void chooseLibrary()}>
+                {movingLibrary ? 'Moving…' : 'Move it…'}
               </button>
               <button
                 className="btn btn-small"
-                onClick={async () => {
-                  const chosen = await window.valutique.dbLocation.browseExisting();
-                  if (chosen) await window.valutique.dbLocation.set(chosen);
-                }}
+                onClick={() => void window.valutique.shell.showItemInFolder(library.path)}
               >
-                Open an existing one…
+                Show in folder
               </button>
-              {!dbLocation.isDefault && (
-                <button className="btn btn-small" onClick={() => void window.valutique.dbLocation.resetToDefault()}>
+              {!library.isDefault && (
+                <button
+                  className="btn btn-small"
+                  disabled={movingLibrary}
+                  onClick={async () => {
+                    setLibraryError(null);
+                    setMovingLibrary(true);
+                    const result = await window.valutique.library.resetToDefault();
+                    if (!result.success) {
+                      setLibraryError(result.error ?? 'Could not move the library.');
+                      setMovingLibrary(false);
+                    }
+                  }}
+                >
                   Reset to default
                 </button>
               )}
             </div>
-            <span className="field-hint">Changing this restarts the app.</span>
-          </div>
-        )}
-
-        {mediaLocation && (
-          <div className="field">
-            <label>Photos</label>
-            <div className="text-muted" style={{ fontSize: 13, wordBreak: 'break-all' }}>
-              {mediaLocation.path} · {mediaLocation.fileCount} files, {formatBytes(mediaLocation.totalBytes)}
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button
-                className="btn btn-small"
-                onClick={() => void window.valutique.shell.showItemInFolder(mediaLocation.path)}
-              >
-                Show in folder
-              </button>
-            </div>
             <p className="text-muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-              Photos live beside the database and move with it. They are stored relative to it, so they cannot be
-              relocated on their own.
+              Your database and photos live here together. Moving the folder moves both, so they can never be
+              separated. Changing this restarts the app.
             </p>
           </div>
         )}

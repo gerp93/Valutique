@@ -1,7 +1,7 @@
 import initSqlJs, { Database } from 'sql.js';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getEffectiveDbPath, isUsingDefaultLocation } from '../dbLocation';
+import { getEffectiveDbPath, isUsingDefaultLibrary } from '../library';
 
 let dbInstance: Database | null = null;
 let currentDbPath: string | null = null;
@@ -72,7 +72,7 @@ function readDatabaseFile(dbPath: string, isConfigured: boolean): Buffer | null 
 export async function initDatabase(dbPath?: string): Promise<Database> {
   const SQL = await initSqlJs();
   // An explicitly passed path is as deliberate as a configured one.
-  const isConfigured = dbPath !== undefined || !isUsingDefaultLocation();
+  const isConfigured = dbPath !== undefined || !isUsingDefaultLibrary();
   dbPath = dbPath ?? getEffectiveDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 

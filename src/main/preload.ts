@@ -147,17 +147,12 @@ contextBridge.exposeInMainWorld('valutique', {
     encryptionAvailable: () => ipcRenderer.invoke('settings:encryptionAvailable'),
   },
 
-  dbLocation: {
-    get: () => ipcRenderer.invoke('dbLocation:get'),
-    browseExisting: () => ipcRenderer.invoke('dbLocation:browseExisting'),
-    browseNew: () => ipcRenderer.invoke('dbLocation:browseNew'),
-    set: (newPath: string) => ipcRenderer.invoke('dbLocation:set', newPath),
-    resetToDefault: () => ipcRenderer.invoke('dbLocation:resetToDefault'),
-  },
-
-  mediaLocation: {
-    // Read-only: the media root is derived from the database location.
-    get: () => ipcRenderer.invoke('mediaLocation:get'),
+  library: {
+    get: () => ipcRenderer.invoke('library:get'),
+    browse: () => ipcRenderer.invoke('library:browse'),
+    inspect: (target: string) => ipcRenderer.invoke('library:inspect', target),
+    set: (newPath: string) => ipcRenderer.invoke('library:set', newPath),
+    resetToDefault: () => ipcRenderer.invoke('library:resetToDefault'),
   },
 
   shell: {

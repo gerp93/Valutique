@@ -23,8 +23,8 @@ import {
 import { AiJob, BatchEstimate, CliLogEvent, QueueState } from '@shared/types/job';
 import { CliEnvironment, CliInstallResult, CliStatus } from '@shared/types/cli';
 import { UsageReport } from '@shared/types/usage';
-import { ImportAnalysis, ImportPlan, ImportProgress, ImportResult } from '@shared/types/import';
-import { AppSettings, DbLocationInfo, MediaLocationInfo, UpdateCheckResult, UpdateSettingsInput } from '@shared/types/settings';
+import { FolderScan, ImportAnalysis, ImportPlan, ImportProgress, ImportResult } from '@shared/types/import';
+import { AppSettings, FolderInspection, LibraryInfo, UpdateCheckResult, UpdateSettingsInput } from '@shared/types/settings';
 
 export interface DuplicateSuggestion {
   itemIds: string[];
@@ -74,7 +74,7 @@ export interface ValutiqueApi {
   };
   import: {
     pickFiles(): Promise<string[]>;
-    pickFolder(): Promise<string[]>;
+    pickFolder(): Promise<FolderScan>;
     analyze(collectionId: string, filePaths: string[], useAi: boolean): Promise<ImportAnalysis>;
     commit(analysis: ImportAnalysis, plan: ImportPlan): Promise<ImportResult>;
     onProgress(callback: (progress: ImportProgress) => void): () => void;
@@ -126,15 +126,12 @@ export interface ValutiqueApi {
     update(input: UpdateSettingsInput): Promise<AppSettings>;
     encryptionAvailable(): Promise<boolean>;
   };
-  dbLocation: {
-    get(): Promise<DbLocationInfo>;
-    browseExisting(): Promise<string | null>;
-    browseNew(): Promise<string | null>;
-    set(newPath: string): Promise<{ success: boolean }>;
-    resetToDefault(): Promise<{ success: boolean }>;
-  };
-  mediaLocation: {
-    get(): Promise<MediaLocationInfo>;
+  library: {
+    get(): Promise<LibraryInfo>;
+    browse(): Promise<string | null>;
+    inspect(target: string): Promise<FolderInspection>;
+    set(newPath: string): Promise<{ success: boolean; error?: string }>;
+    resetToDefault(): Promise<{ success: boolean; error?: string }>;
   };
   shell: {
     openExternal(url: string): Promise<{ success: boolean }>;

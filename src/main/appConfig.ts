@@ -7,8 +7,12 @@ import { app } from 'electron';
  * readable *before* the database opens -- chiefly where the database and media
  * library actually live. Everything else belongs in the database itself.
  */
-interface AppConfig {
+export interface AppConfig {
+  /** Folder holding the database and its photos. See library.ts for the layout. */
+  libraryPath?: string;
+  /** @deprecated Pre-library layout, pointing at the .db file itself. Migrated to `libraryPath` on startup. */
   dbPath?: string;
+  /** @deprecated Photos were separately configurable. Migrated into the library folder on startup. */
   mediaPath?: string;
 }
 

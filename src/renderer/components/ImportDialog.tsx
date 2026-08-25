@@ -48,8 +48,28 @@ export default function ImportDialog({
   const mustAcknowledgeReducedSize = reducedSizeCount > 0 && !reducedSizeAcknowledged;
 
   const pick = async (mode: 'files' | 'folder') => {
-    const paths = mode === 'files' ? await window.valutique.import.pickFiles() : await window.valutique.import.pickFolder();
-    if (paths.length === 0) return;
+    setError(null);
+
+    let paths: string[];
+    if (mode === 'files') {
+      paths = await window.valutique.import.pickFiles();
+      // An empty result here means the user closed the picker.
+      if (paths.length === 0) return;
+    } else {
+      const scan = await window.valutique.import.pickFolder();
+      // A folder with nothing usable in it used to return silently, which was
+      // indistinguishable from the button being broken. Say what was found.
+      if (scan.paths.length === 0) {
+        setError(
+          scan.skipped > 0
+            ? `That folder has ${scan.skipped} ${scan.skipped === 1 ? 'file' : 'files'}, but none Valutique can read. ` +
+              `It handles JPG, PNG, HEIC, WebP, GIF and BMP.`
+            : 'That folder has no photos in it. Sub-folders are searched too, so there is nothing to add.'
+        );
+        return;
+      }
+      paths = scan.paths;
+    }
 
     setBusy(true);
     setError(null);

@@ -1,9 +1,9 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { app, nativeImage, protocol } from 'electron';
-import { readConfig, writeConfig } from './appConfig';
-import { getEffectiveDbPath } from './dbLocation';
+import { nativeImage, protocol } from 'electron';
+import heicConvert from 'heic-convert';
+import { getMediaPath } from './library';
 
 /**
  * The media library: photo bytes on disk, content-addressed by SHA-256.
@@ -19,100 +19,35 @@ import { getEffectiveDbPath } from './dbLocation';
 
 export const PHOTO_PROTOCOL = 'valutique-photo';
 
-const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']);
+const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif']);
 
 /**
- * The media library always sits next to the database, in a `media` folder
- * beside the .db file. It is derived, never configured.
+ * HEIC is what an iPhone and iPhoto hand you, and Chromium cannot decode it --
+ * so `nativeImage` returns an empty image and every downstream step silently
+ * gets zero-by-zero pixels. These are transcoded to JPEG on the way into the
+ * library, which keeps the rest of the app working on formats it can read.
  *
- * The database stores photos as paths relative to this root, so a database and
- * a media library that can be pointed at different places independently are
- * two halves of one thing that drift apart the moment either is moved. When
- * they do, every photo silently resolves to nothing -- the collection loads
- * fine and the images are simply gone. Deriving the location makes that state
- * unrepresentable: move the database and the photos come with it.
+ * The decoder is pure JS + wasm on purpose: a native HEIF binding would have to
+ * be rebuilt per platform in CI, which this file exists to avoid.
  */
-export function getMediaPathFor(dbPath: string): string {
-  return path.join(path.dirname(dbPath), 'media');
+const TRANSCODED_EXTENSIONS = new Set(['.heic', '.heif']);
+
+async function toReadableImage(bytes: Buffer, ext: string): Promise<{ bytes: Buffer; ext: string }> {
+  if (!TRANSCODED_EXTENSIONS.has(ext)) return { bytes, ext };
+  try {
+    const jpeg = await heicConvert({ buffer: bytes, format: 'JPEG', quality: 0.92 });
+    return { bytes: Buffer.from(jpeg), ext: '.jpg' };
+  } catch (err) {
+    throw new Error(`This HEIC photo could not be read: ${(err as Error).message}`);
+  }
 }
 
+/**
+ * Photos live in `media/` inside the library folder. Derived, never
+ * configured -- see library.ts for why the two cannot be separated.
+ */
 export function getEffectiveMediaPath(): string {
-  return getMediaPathFor(getEffectiveDbPath());
-}
-
-/**
- * Copies the library to sit beside a database that is about to move. Copy
- * rather than move: a half-relocated photo library shows up as missing images
- * rather than a loud failure, so the originals stay put until the new copy is
- * known good.
- */
-export function relocateLibraryForDbMove(oldDbPath: string, newDbPath: string): void {
-  const from = getMediaPathFor(oldDbPath);
-  const to = getMediaPathFor(newDbPath);
-  if (path.resolve(from) === path.resolve(to)) return;
-  if (!fs.existsSync(from)) return;
-
-  fs.mkdirSync(to, { recursive: true });
-  copyDirectory(from, to);
-}
-
-/**
- * Brings pre-derivation installs into line. Two cases produce a library that
- * is no longer where the database says it should be: an explicitly configured
- * `mediaPath` from when that was settable, and a database that was moved back
- * when the library stayed behind in userData. Both are copied into place once,
- * and the stale config key is dropped.
- */
-export function reconcileMediaLocation(): void {
-  const config = readConfig();
-  const desired = getEffectiveMediaPath();
-
-  const legacyCandidates = [config.mediaPath, path.join(app.getPath('userData'), 'media')];
-
-  for (const legacy of legacyCandidates) {
-    if (!legacy || legacy.trim() === '') continue;
-    if (path.resolve(legacy) === path.resolve(desired)) break;
-    if (!fs.existsSync(legacy)) continue;
-    // Only adopt a legacy library when the derived location has nothing to
-    // lose -- never paper over a real library that is already in place.
-    if (hasAnyFile(desired)) break;
-    if (!hasAnyFile(legacy)) continue;
-
-    fs.mkdirSync(desired, { recursive: true });
-    copyDirectory(legacy, desired);
-    console.log(`Media library copied alongside the database: ${legacy} -> ${desired}`);
-    break;
-  }
-
-  if (config.mediaPath !== undefined) {
-    delete config.mediaPath;
-    writeConfig(config);
-  }
-}
-
-function hasAnyFile(dir: string): boolean {
-  if (!fs.existsSync(dir)) return false;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (hasAnyFile(path.join(dir, entry.name))) return true;
-    } else {
-      return true;
-    }
-  }
-  return false;
-}
-
-function copyDirectory(from: string, to: string): void {
-  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-    const src = path.join(from, entry.name);
-    const dest = path.join(to, entry.name);
-    if (entry.isDirectory()) {
-      fs.mkdirSync(dest, { recursive: true });
-      copyDirectory(src, dest);
-    } else if (!fs.existsSync(dest)) {
-      fs.copyFileSync(src, dest);
-    }
-  }
+  return getMediaPath();
 }
 
 export function isSupportedImage(filePath: string): boolean {
@@ -130,23 +65,35 @@ export interface IngestedPhoto {
 }
 
 /** Reads dimensions without copying anything -- used to preview a drop before committing to it. */
-export function inspect(sourcePath: string): { width: number; height: number; byteSize: number; sha256: string } {
-  const bytes = fs.readFileSync(sourcePath);
+export async function inspect(
+  sourcePath: string,
+  originalBytes?: Buffer
+): Promise<{ width: number; height: number; byteSize: number; sha256: string; decoded: Buffer }> {
+  const original = originalBytes ?? fs.readFileSync(sourcePath);
+  const { bytes } = await toReadableImage(original, path.extname(sourcePath).toLowerCase());
   const image = nativeImage.createFromBuffer(bytes);
   const size = image.isEmpty() ? { width: 0, height: 0 } : image.getSize();
   return {
     width: size.width,
     height: size.height,
-    byteSize: bytes.length,
-    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    byteSize: original.length,
+    // Hashed on the original file, so re-importing the same HEIC is recognised
+    // as a duplicate even though what we stored is a JPEG.
+    sha256: crypto.createHash('sha256').update(original).digest('hex'),
+    // Display-ready bytes: the caller needs these for thumbnails and perceptual
+    // hashing, neither of which can read HEIC.
+    decoded: bytes,
   };
 }
 
 /** Copies a file into the library under its content hash. Idempotent. */
-export function ingest(sourcePath: string): IngestedPhoto {
-  const bytes = fs.readFileSync(sourcePath);
-  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
-  const ext = path.extname(sourcePath).toLowerCase() || '.jpg';
+export async function ingest(sourcePath: string): Promise<IngestedPhoto> {
+  const original = fs.readFileSync(sourcePath);
+  // Hashed on the original bytes so dedupe keys on the file the user actually
+  // has, not on whatever the transcoder happened to produce.
+  const sha256 = crypto.createHash('sha256').update(original).digest('hex');
+  const sourceExt = path.extname(sourcePath).toLowerCase() || '.jpg';
+  const { bytes, ext } = await toReadableImage(original, sourceExt);
 
   // Two levels of fan-out keeps any single directory to a manageable size even
   // for a very large collection.
@@ -192,27 +139,6 @@ export function remove(relativePath: string): void {
   } catch {
     // A missing file on delete is not worth failing the surrounding operation.
   }
-}
-
-export function libraryStats(): { fileCount: number; totalBytes: number } {
-  const root = getEffectiveMediaPath();
-  let fileCount = 0;
-  let totalBytes = 0;
-
-  const walk = (dir: string) => {
-    if (!fs.existsSync(dir)) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else {
-        fileCount += 1;
-        totalBytes += fs.statSync(full).size;
-      }
-    }
-  };
-
-  walk(root);
-  return { fileCount, totalBytes };
 }
 
 export interface EncodedImage {

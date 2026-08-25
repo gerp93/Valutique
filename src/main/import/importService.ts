@@ -101,14 +101,14 @@ export class ImportService {
 
       try {
         const buffer = fs.readFileSync(filePath);
-        const info = photoStore.inspect(filePath);
+        const info = await photoStore.inspect(filePath, buffer);
 
         // EXIF first; file mtime is a decent proxy for photos that lost their
         // metadata to an edit or an export.
         const exif = readExifSummary(buffer);
         const captured = exif.capturedAt ?? safeMtime(filePath);
         const existingItemId = this.photos.findItemByHash(info.sha256);
-        const preview = thumbnailFor(filePath, REVIEW_THUMBNAIL_EDGE);
+        const preview = thumbnailFor(info.decoded, REVIEW_THUMBNAIL_EDGE);
         const reducedSize = checkReducedSize(info.width, info.height, exif.hasCameraTag);
 
         photos.push({
@@ -127,7 +127,9 @@ export class ImportService {
           thumbnail: preview ? `data:${preview.mediaType};base64,${preview.base64}` : '',
         });
 
-        hashes.push(averageHash(buffer));
+        // Perceptual hash runs on the decoded image, so a HEIC hashes the same
+        // as the JPEG a user might import later of the same shot.
+        hashes.push(averageHash(info.decoded));
       } catch {
         skippedPaths.push(filePath);
       }
@@ -199,7 +201,18 @@ export class ImportService {
 
       for (let start = 0; start < photos.length; start += GROUPING_CHUNK_SIZE) {
         const chunk = photos.slice(start, start + GROUPING_CHUNK_SIZE);
-        const images = chunk.map((photo) => thumbnailFor(photo.sourcePath, THUMBNAIL_EDGE));
+        // Decoded again rather than reusing the review thumbnail: grouping needs
+        // more detail than the grid does, and a HEIC cannot be read from its path.
+        const images = await Promise.all(
+          chunk.map(async (photo) => {
+            try {
+              const { decoded } = await photoStore.inspect(photo.sourcePath);
+              return thumbnailFor(decoded, THUMBNAIL_EDGE);
+            } catch {
+              return null;
+            }
+          })
+        );
 
         if (images.some((image) => image === null)) return null;
 
@@ -234,7 +247,7 @@ export class ImportService {
   }
 
   /** Writes the files into the library, creates the items, and queues the work. */
-  commit(analysis: ImportAnalysis, plan: ImportPlan, onProgress?: ProgressReporter): ImportResult {
+  async commit(analysis: ImportAnalysis, plan: ImportPlan, onProgress?: ProgressReporter): Promise<ImportResult> {
     const settings = this.settings.get();
 
     let itemsCreated = 0;
@@ -272,7 +285,7 @@ export class ImportService {
         });
         addedSoFar += 1;
         try {
-          const ingested = photoStore.ingest(photo.sourcePath);
+          const ingested = await photoStore.ingest(photo.sourcePath);
           this.photos.addToItem(item.id, ingested, photo.originalFilename);
           photosAdded += 1;
         } catch {
@@ -309,9 +322,9 @@ function safeMtime(filePath: string): Date | null {
 }
 
 /** Encodes a small thumbnail. Small on purpose: 50 of these must stay cheap to send. */
-function thumbnailFor(filePath: string, edge: number): AiImage | null {
+function thumbnailFor(bytes: Buffer, edge: number): AiImage | null {
   try {
-    const image = nativeImage.createFromPath(filePath);
+    const image = nativeImage.createFromBuffer(bytes);
     if (image.isEmpty()) return null;
 
     const size = image.getSize();
