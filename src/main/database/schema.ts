@@ -430,7 +430,34 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
       created_at TEXT NOT NULL,
       started_at TEXT,
       finished_at TEXT,
+      batch_id TEXT,
       FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Migration: batch_id links a job to the provider batch it was submitted
+  // in, for connectors/tasks that support running as a batch. Nullable and
+  // absent on every job that ran the normal way.
+  try {
+    db.run(`ALTER TABLE ai_jobs ADD COLUMN batch_id TEXT`);
+  } catch (e) {
+    // Already present on databases created after this change.
+  }
+
+  // One row per provider batch request, which can cover many jobs at once.
+  // Checked and resolved as a unit -- the provider only ever reports "the
+  // whole batch is done", never one job within it -- so batch state lives
+  // here rather than being duplicated onto every job it covers.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS ai_batches (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      connector_id TEXT,
+      provider_batch_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      created_at TEXT NOT NULL,
+      checked_at TEXT,
+      FOREIGN KEY (connector_id) REFERENCES ai_connectors(id) ON DELETE SET NULL
     )
   `);
 
@@ -464,6 +491,8 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
   db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_status ON ai_jobs(status, not_before)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_item ON ai_jobs(item_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_connector ON ai_jobs(connector_id, status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_batch ON ai_jobs(batch_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_batches_status ON ai_batches(status)`);
 
   seedSettings(db);
   recoverInterruptedJobs(db);

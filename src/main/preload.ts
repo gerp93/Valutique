@@ -117,8 +117,8 @@ contextBridge.exposeInMainWorld('valutique', {
 
   queue: {
     getState: () => ipcRenderer.invoke('queue:getState'),
-    enqueue: (task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null) =>
-      ipcRenderer.invoke('queue:enqueue', task, tier, itemIds, collectionId),
+    enqueue: (task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null, runAsBatch = false) =>
+      ipcRenderer.invoke('queue:enqueue', task, tier, itemIds, collectionId, runAsBatch),
     estimate: (task: AiTask, tier: AiTier, itemIds: string[], connectorId: string | null) =>
       ipcRenderer.invoke('queue:estimate', task, tier, itemIds, connectorId),
     pause: () => ipcRenderer.invoke('queue:pause'),

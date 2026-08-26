@@ -176,7 +176,24 @@ export class AiTasks {
     onCliOutput?: (line: string) => void
   ): Promise<TaskOutcome> {
     const started = Date.now();
+    const request = await this.buildAppraiseRequest(itemId, tier, connector, onCliOutput);
+    const response = await this.registry.for(connector).complete(connector, request, signal);
+    return this.applyAppraiseResponse(itemId, tier, connector, response, started);
+  }
 
+  /**
+   * Everything about *asking* for a valuation -- item lookup, prompt, photos,
+   * schema -- with no call to the provider. Split out from `appraise()` so
+   * batch mode can build every item's request up front, bundle them into one
+   * provider batch submission, and only come back to `applyAppraiseResponse`
+   * once results are ready, possibly a long time and an app restart later.
+   */
+  async buildAppraiseRequest(
+    itemId: string,
+    tier: AiTier,
+    connector: AiConnector,
+    onCliOutput?: (line: string) => void
+  ) {
     const item = this.items.getById(itemId);
     if (!item) throw new AiError(`Item ${itemId} no longer exists.`, false);
 
@@ -197,35 +214,51 @@ export class AiTasks {
       })
       .join('\n');
 
-    // Quick is the "one fast read" tier -- no search, no eBay lookup, no comp
-    // verification, regardless of what the connector/settings would otherwise
-    // allow. That's what actually makes it fast and cheap rather than just
-    // "the same pipeline on a cheaper model".
-    const canSearch = tier === 'deep' && connector.supportsWebSearch && settings.maxSearchesPerAppraisal > 0;
+    const canSearch = this.canSearchFor(tier, connector, settings.maxSearchesPerAppraisal);
     const ebayContext =
       tier === 'deep' ? await this.loadEbayContext(item.name, fieldSummary, settings.ebayEnabled) : null;
 
-    const response = await this.registry.for(connector).complete(
-      connector,
-      {
-        system: appraiseSystemPrompt(collection, canSearch),
-        prompt: appraiseUserPrompt({
-          itemName: item.name,
-          description: item.description,
-          conditionGrade: item.conditionGrade,
-          conditionNotes: item.conditionNotes,
-          fieldSummary,
-          photoCount: images.length,
-          currency: settings.defaultCurrency,
-          ebayContext,
-        }),
-        images,
-        schema: buildAppraiseSchema(settings.defaultCurrency),
-        webSearch: { enabled: canSearch, maxUses: settings.maxSearchesPerAppraisal },
-        onCliOutput,
-      },
-      signal
-    );
+    return {
+      system: appraiseSystemPrompt(collection, canSearch),
+      prompt: appraiseUserPrompt({
+        itemName: item.name,
+        description: item.description,
+        conditionGrade: item.conditionGrade,
+        conditionNotes: item.conditionNotes,
+        fieldSummary,
+        photoCount: images.length,
+        currency: settings.defaultCurrency,
+        ebayContext,
+      }),
+      images,
+      schema: buildAppraiseSchema(settings.defaultCurrency),
+      webSearch: { enabled: canSearch, maxUses: settings.maxSearchesPerAppraisal },
+      onCliOutput,
+    };
+  }
+
+  /**
+   * The DB-writing half of an appraisal, given a response the provider has
+   * already produced. `tier`/`connector` are passed in rather than re-read
+   * from the job because a batch result can be applied well after the job
+   * that requested it was submitted -- there is no live request to consult.
+   *
+   * Recomputes `canSearch` from current settings rather than carrying it over
+   * from `buildAppraiseRequest`, on the assumption that search/tier settings
+   * don't change while a run is in flight. For a batch run waiting on the
+   * provider for hours, a setting changed mid-flight could in principle make
+   * this differ from what was actually requested -- rare enough not to be
+   * worth threading extra state through the batch tables for.
+   */
+  async applyAppraiseResponse(
+    itemId: string,
+    tier: AiTier,
+    connector: AiConnector,
+    response: AiResponse,
+    started: number
+  ): Promise<TaskOutcome> {
+    const settings = this.settings.get();
+    const canSearch = this.canSearchFor(tier, connector, settings.maxSearchesPerAppraisal);
 
     const payload = response.json as AppraisePayload | null;
     if (!payload || typeof payload !== 'object') {
@@ -262,6 +295,14 @@ export class AiTasks {
       started,
       mid !== null ? `Valued at ${mid} ${payload.currency || settings.defaultCurrency}` : 'Appraised'
     );
+  }
+
+  // Quick is the "one fast read" tier -- no search, no eBay lookup, no comp
+  // verification, regardless of what the connector/settings would otherwise
+  // allow. That's what actually makes it fast and cheap rather than just
+  // "the same pipeline on a cheaper model".
+  private canSearchFor(tier: AiTier, connector: AiConnector, maxSearchesPerAppraisal: number): boolean {
+    return tier === 'deep' && connector.supportsWebSearch && maxSearchesPerAppraisal > 0;
   }
 
   private async loadEbayContext(

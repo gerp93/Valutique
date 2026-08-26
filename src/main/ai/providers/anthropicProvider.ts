@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { AiConnector, ConnectorTestResult } from '../../../shared/types/connector';
 import { AiAuthError, AiCapabilityError, AiError, AiRateLimitError, resumeTimeFrom } from '../errors';
 import { extractJson, schemaInstruction } from '../jsonExtract';
-import { AiProvider, AiRequest, AiResponse } from '../types';
+import { AiBatchProvider, AiBatchRequestItem, AiBatchResult, AiProvider, AiRequest, AiResponse } from '../types';
 
 /** How many times a paused turn may be resumed before we call it runaway. */
 const MAX_CONTINUATIONS = 5;
@@ -10,9 +10,18 @@ const MAX_CONTINUATIONS = 5;
 /** Models where the server-side refusal fallback is available and worth enabling. */
 const FALLBACK_CAPABLE = /^claude-(opus-5|fable-5|mythos-5)/;
 
+/** Batch error types that will fail identically on retry -- a bad request or a bad key, not a transient condition. */
+const NON_RETRYABLE_BATCH_ERRORS = new Set([
+  'invalid_request_error',
+  'authentication_error',
+  'permission_error',
+  'not_found_error',
+  'billing_error',
+]);
+
 type AnyBlock = { type: string; [key: string]: unknown };
 
-export class AnthropicProvider implements AiProvider {
+export class AnthropicProvider implements AiProvider, AiBatchProvider {
   constructor(private getApiKey: (connectorId: string) => string | null) {}
 
   private client(connector: AiConnector): Anthropic {
@@ -27,8 +36,13 @@ export class AnthropicProvider implements AiProvider {
     });
   }
 
-  async complete(connector: AiConnector, request: AiRequest, signal?: AbortSignal): Promise<AiResponse> {
-    const client = this.client(connector);
+  /**
+   * Builds the raw request body shared by a live call and a batch submission.
+   * Everything about *shaping* the request -- caching, structured output,
+   * search tooling -- lives here once, so the batch path can't quietly drift
+   * from what a normal run actually sends.
+   */
+  private buildParams(connector: AiConnector, request: AiRequest): { params: Record<string, unknown>; model: string; useFallbacks: boolean } {
     const model = connector.model || 'claude-opus-5';
     const wantsSearch = Boolean(request.webSearch?.enabled) && connector.supportsWebSearch;
 
@@ -101,6 +115,14 @@ export class AnthropicProvider implements AiProvider {
     // than handing back an empty response.
     const useFallbacks = FALLBACK_CAPABLE.test(model);
 
+    return { params, model, useFallbacks };
+  }
+
+  async complete(connector: AiConnector, request: AiRequest, signal?: AbortSignal): Promise<AiResponse> {
+    const client = this.client(connector);
+    const { params, model, useFallbacks } = this.buildParams(connector, request);
+    const messages = (params.messages as Anthropic.MessageParam[]) ?? [];
+
     let response = await this.send(client, params, useFallbacks, signal);
 
     let tokensIn = response.usage?.input_tokens ?? 0;
@@ -123,6 +145,27 @@ export class AnthropicProvider implements AiProvider {
       searchUrls = searchUrls.concat(collectSearchUrls(response));
     }
 
+    return this.toAiResponse(response, tokensIn, tokensOut, searches, searchUrls, model);
+  }
+
+  /**
+   * Turns one finished Anthropic message into the response shape the rest of
+   * the app deals in. Shared by the live path (after any pause_turn
+   * continuations) and the batch results path (which never continues --
+   * see fetchBatchResults). Takes no `AiRequest` on purpose: a batch result
+   * can be read back in a session that never held the original request in
+   * memory, so this can only depend on the message itself. `extractJson` is a
+   * safe no-op on plain prose, so trying it unconditionally costs nothing on
+   * a call that never asked for JSON.
+   */
+  private toAiResponse(
+    response: Anthropic.Message,
+    tokensIn: number,
+    tokensOut: number,
+    searches: number,
+    searchUrls: string[],
+    fallbackModel: string
+  ): AiResponse {
     if (response.stop_reason === 'refusal') {
       const category =
         (response as unknown as { stop_details?: { category?: string } }).stop_details?.category ?? 'unspecified';
@@ -140,13 +183,13 @@ export class AnthropicProvider implements AiProvider {
     }
 
     return {
-      json: request.schema ? extractJson(text) : null,
+      json: extractJson(text),
       text,
       tokensIn,
       tokensOut,
       webSearches: searches,
       searchUrls: Array.from(new Set(searchUrls)),
-      model: response.model ?? model,
+      model: response.model ?? fallbackModel,
     };
   }
 
@@ -167,6 +210,103 @@ export class AnthropicProvider implements AiProvider {
     } catch (err) {
       throw translateError(err);
     }
+  }
+
+  // --- batch API -------------------------------------------------------------
+  //
+  // Anthropic's Message Batches endpoint: submit up to 100k requests at once,
+  // get results back asynchronously (usually within an hour, up to 24h) at
+  // half the token price. Deliberately not routed through the refusal-fallback
+  // beta wrapper `send()` uses -- fallbacks are for Opus/Fable-tier models,
+  // batch mode today only ever runs the default (Sonnet-class) connector, and
+  // keeping the batch request body plain avoids finding out the beta flag
+  // doesn't behave the same way inside a batch.
+
+  async submitBatch(connector: AiConnector, items: AiBatchRequestItem[]): Promise<string> {
+    const client = this.client(connector);
+
+    const requests = items.map((item) => ({
+      custom_id: item.customId,
+      params: this.buildParams(connector, item.request).params as never,
+    }));
+
+    try {
+      const batch = await client.messages.batches.create({ requests });
+      return batch.id;
+    } catch (err) {
+      throw translateError(err);
+    }
+  }
+
+  async pollBatch(connector: AiConnector, providerBatchId: string): Promise<'in_progress' | 'ended'> {
+    const client = this.client(connector);
+    try {
+      const batch = await client.messages.batches.retrieve(providerBatchId);
+      return batch.processing_status === 'ended' ? 'ended' : 'in_progress';
+    } catch (err) {
+      throw translateError(err);
+    }
+  }
+
+  async fetchBatchResults(connector: AiConnector, providerBatchId: string): Promise<AiBatchResult[]> {
+    const client = this.client(connector);
+    const model = connector.model || 'claude-opus-5';
+    const results: AiBatchResult[] = [];
+
+    try {
+      for await (const entry of await client.messages.batches.results(providerBatchId)) {
+        const customId = entry.custom_id;
+
+        if (entry.result.type === 'errored') {
+          const errorObj = entry.result.error.error;
+          const retryable = !NON_RETRYABLE_BATCH_ERRORS.has(errorObj.type);
+          results.push({ customId, ok: false, message: `Anthropic error (${errorObj.type}): ${errorObj.message}`, retryable });
+          continue;
+        }
+
+        if (entry.result.type === 'canceled' || entry.result.type === 'expired') {
+          results.push({ customId, ok: false, message: `Batch item ${entry.result.type}.`, retryable: true });
+          continue;
+        }
+
+        const message = entry.result.message as Anthropic.Message;
+
+        // A server-side tool loop that hit its own step cap comes back
+        // `pause_turn` on a live call, and the caller resumes it by resending
+        // the paused turn (see the loop in `complete()`). A batch result can't
+        // be resumed that way -- there's no live request to append to -- so
+        // this surfaces as a retryable failure. Re-queuing the same item as a
+        // normal (non-batch) run lets it actually continue.
+        if (message.stop_reason === 'pause_turn') {
+          results.push({
+            customId,
+            ok: false,
+            message: 'Hit the search tool\'s own step limit inside a batch run, which cannot be resumed the way a live run can. Retry this item outside of batch mode.',
+            retryable: true,
+          });
+          continue;
+        }
+
+        try {
+          const response = this.toAiResponse(
+            message,
+            message.usage?.input_tokens ?? 0,
+            message.usage?.output_tokens ?? 0,
+            countSearches(message),
+            collectSearchUrls(message),
+            model
+          );
+          results.push({ customId, ok: true, response });
+        } catch (err) {
+          const translated = err instanceof AiError ? err : translateError(err);
+          results.push({ customId, ok: false, message: translated.message, retryable: translated.retryable });
+        }
+      }
+    } catch (err) {
+      throw translateError(err);
+    }
+
+    return results;
   }
 
   async test(connector: AiConnector): Promise<ConnectorTestResult> {

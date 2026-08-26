@@ -55,6 +55,10 @@ export default function RunDialog({
   const [estimate, setEstimate] = useState<BatchEstimate | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Not sticky across dialogs, same reasoning as `tier` -- a run always says
+  // out loud whether it's trading speed for a lower price, rather than
+  // quietly reusing whatever was picked last time.
+  const [runAsBatch, setRunAsBatch] = useState(false);
 
   // A single explicitly-chosen item (the item detail page's Re-identify /
   // Re-appraise buttons) is already an unambiguous redo request -- the
@@ -88,7 +92,13 @@ export default function RunDialog({
   }, [task, tier]);
 
   useEffect(() => {
-    void window.valutique.queue.estimate(task, tier, itemIds, connectorId).then(setEstimate);
+    void window.valutique.queue.estimate(task, tier, itemIds, connectorId).then((result) => {
+      setEstimate(result);
+      // A connector switch (or the estimate simply loading) can turn batch
+      // mode from available to not -- don't leave a stale checked box that
+      // would silently be downgraded to a normal run on submit.
+      if (!result.canRunAsBatch) setRunAsBatch(false);
+    });
   }, [task, tier, itemIds, connectorId]);
 
   const confirm = async () => {
@@ -103,7 +113,7 @@ export default function RunDialog({
         await window.valutique.connectors.setBinding(task, tier, connectorId);
       }
 
-      const queued = await window.valutique.queue.enqueue(task, tier, itemIds, null);
+      const queued = await window.valutique.queue.enqueue(task, tier, itemIds, null, runAsBatch);
       onConfirmed(queued);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -112,6 +122,13 @@ export default function RunDialog({
   };
 
   const blocked = connectors.length === 0;
+
+  // Anthropic's Batch API is ~50% off standard token pricing. Applied to the
+  // whole estimate rather than re-deriving a token-only figure -- close
+  // enough for a before-you-run number, flagged as approximate in the copy
+  // below since search fees aren't confirmed to carry the same discount.
+  const batchDisplayCost =
+    estimate?.estimatedCost == null ? null : runAsBatch ? estimate.estimatedCost * 0.5 : estimate.estimatedCost;
 
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
@@ -173,6 +190,19 @@ export default function RunDialog({
               </select>
             </div>
 
+            {/* Reserved for bulk runs -- for one item, waiting up to a day for a
+                result you'd otherwise have in seconds is a bad trade, and the
+                checkbox would only ever get in the way. */}
+            {!singleTarget && estimate?.canRunAsBatch && (
+              <label className="field-inline" style={{ marginBottom: 12 }}>
+                <input type="checkbox" checked={runAsBatch} onChange={(event) => setRunAsBatch(event.target.checked)} />
+                <span>
+                  Run as batch — about half the cost, but results may take up to a day. You don't need to keep the
+                  app open; results appear whenever it's next running.
+                </span>
+              </label>
+            )}
+
             {itemIds.length === 0 ? (
               <p className="card-hint">
                 Every {itemNoun} here already has a result for this task. Check the box above to redo them.
@@ -186,23 +216,25 @@ export default function RunDialog({
                       <div className="stat-value" style={{ fontSize: 20 }}>
                         {estimate.estimatedCost === null
                           ? 'Free'
-                          : estimate.estimatedCost < 0.01
+                          : batchDisplayCost !== null && batchDisplayCost < 0.01
                             ? '<0.01'
-                            : estimate.estimatedCost.toFixed(2)}
+                            : batchDisplayCost?.toFixed(2)}
                       </div>
-                      <div className="stat-sub">{estimate.billingMode}</div>
+                      <div className="stat-sub">{runAsBatch ? `${estimate.billingMode} · batch estimate` : estimate.billingMode}</div>
                     </div>
                     <div className="card">
                       <div className="stat-label">Time</div>
                       <div className="stat-value" style={{ fontSize: 20 }}>
-                        {formatDuration(estimate.estimatedSeconds)}
+                        {runAsBatch ? 'Up to a day' : formatDuration(estimate.estimatedSeconds)}
                       </div>
-                      <div className="stat-sub">runs in the background</div>
+                      <div className="stat-sub">{runAsBatch ? 'no need to keep the app open' : 'runs in the background'}</div>
                     </div>
                   </div>
 
                   <p className="card-hint" style={{ marginBottom: 12 }}>
-                    {estimate.costSummary}
+                    {runAsBatch
+                      ? "About half the provider's normal token price — the estimate above is approximate, since not every fee (e.g. web search) is confirmed to get the same discount."
+                      : estimate.costSummary}
                   </p>
 
                   <div className="connector-billing">

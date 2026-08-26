@@ -1,6 +1,6 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { AiJob, FailedJob, JobStatus } from '../../shared/types/job';
+import { AiBatch, AiJob, FailedJob, JobStatus } from '../../shared/types/job';
 import { AiTask, AiTier } from '../../shared/types/connector';
 import { all, one, count, reqStr, str, num, reqNum, now, Row } from './helpers';
 import { saveDatabase } from './schema';
@@ -26,6 +26,19 @@ function toJob(row: Row): AiJob {
     startedAt: str(row.started_at),
     finishedAt: str(row.finished_at),
     cliLog: str(row.cli_log),
+    batchId: str(row.batch_id),
+  };
+}
+
+function toBatch(row: Row): AiBatch {
+  return {
+    id: reqStr(row.id),
+    provider: reqStr(row.provider),
+    connectorId: str(row.connector_id),
+    providerBatchId: reqStr(row.provider_batch_id),
+    status: reqStr(row.status, 'submitted') as AiBatch['status'],
+    createdAt: reqStr(row.created_at),
+    checkedAt: str(row.checked_at),
   };
 }
 
@@ -44,9 +57,17 @@ const NOT_SUPERSEDED = `
 
 const SELECT = `
   id, task, tier, item_id, collection_id, connector_id, status, attempts, error, not_before,
-  tokens_in, tokens_out, web_searches, cost_estimate, duration_ms, created_at, started_at, finished_at, cli_log
+  tokens_in, tokens_out, web_searches, cost_estimate, duration_ms, created_at, started_at, finished_at, cli_log, batch_id
   FROM ai_jobs
 `;
+
+const BATCH_SELECT = `
+  id, provider, connector_id, provider_batch_id, status, created_at, checked_at
+  FROM ai_batches
+`;
+
+/** Statuses that mean "this item/task pairing already has work outstanding". */
+const PENDING_STATUSES = ['queued', 'running', 'rate_limited', 'batch_queued', 'batch_pending'];
 
 /** Everything the runner learned from one provider call, recorded for the cost surface. */
 export interface JobCompletion {
@@ -78,22 +99,26 @@ export class JobService {
     tier: AiTier,
     itemId: string | null,
     collectionId: string | null,
-    connectorId: string | null
+    connectorId: string | null,
+    runAsBatch = false
   ): AiJob | null {
     if (itemId) {
       const pending = count(
         this.db,
-        `SELECT COUNT(*) FROM ai_jobs WHERE item_id = ? AND task = ? AND status IN ('queued','running','rate_limited')`,
-        [itemId, task]
+        `SELECT COUNT(*) FROM ai_jobs WHERE item_id = ? AND task = ? AND status IN (${PENDING_STATUSES.map(() => '?').join(',')})`,
+        [itemId, task, ...PENDING_STATUSES]
       );
       if (pending > 0) return null;
     }
 
+    // Batch jobs start life as 'batch_queued', not 'queued' -- claimable()
+    // only looks at 'queued'/'rate_limited', so this is what keeps the normal
+    // per-job runner from ever picking one up and running it twice.
     const id = uuidv4();
     this.db.run(
       `INSERT INTO ai_jobs (id, task, tier, item_id, collection_id, connector_id, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
-      [id, task, tier, itemId, collectionId, connectorId, now()]
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, task, tier, itemId, collectionId, connectorId, runAsBatch ? 'batch_queued' : 'queued', now()]
     );
     saveDatabase(this.db);
     return this.getById(id);
@@ -104,14 +129,80 @@ export class JobService {
     tier: AiTier,
     itemIds: string[],
     collectionId: string | null,
-    connectorId: string | null
+    connectorId: string | null,
+    runAsBatch = false
   ): AiJob[] {
     const created: AiJob[] = [];
     for (const itemId of itemIds) {
-      const job = this.enqueue(task, tier, itemId, collectionId, connectorId);
+      const job = this.enqueue(task, tier, itemId, collectionId, connectorId, runAsBatch);
       if (job) created.push(job);
     }
     return created;
+  }
+
+  // --- provider batches ------------------------------------------------------
+
+  /**
+   * Jobs waiting to be bundled into a provider batch, grouped by connector so
+   * one submission covers everything currently pending for that connector.
+   * Only appraise is wired up to the batch path so far.
+   */
+  batchQueuedByConnector(): Map<string, AiJob[]> {
+    const rows = all(
+      this.db,
+      `SELECT ${SELECT} WHERE status = 'batch_queued' AND connector_id IS NOT NULL ORDER BY created_at`
+    ).map(toJob);
+
+    const grouped = new Map<string, AiJob[]>();
+    for (const job of rows) {
+      if (!job.connectorId) continue;
+      const list = grouped.get(job.connectorId) ?? [];
+      list.push(job);
+      grouped.set(job.connectorId, list);
+    }
+    return grouped;
+  }
+
+  createBatch(provider: string, connectorId: string, providerBatchId: string): AiBatch {
+    const id = uuidv4();
+    this.db.run(
+      `INSERT INTO ai_batches (id, provider, connector_id, provider_batch_id, status, created_at)
+       VALUES (?, ?, ?, ?, 'submitted', ?)`,
+      [id, provider, connectorId, providerBatchId, now()]
+    );
+    saveDatabase(this.db);
+    return this.getBatchById(id)!;
+  }
+
+  getBatchById(id: string): AiBatch | null {
+    const row = one(this.db, `SELECT ${BATCH_SELECT} WHERE id = ?`, [id]);
+    return row ? toBatch(row) : null;
+  }
+
+  /** Batches still worth polling -- anything the provider hasn't reported as finished. */
+  getOpenBatches(): AiBatch[] {
+    return all(this.db, `SELECT ${BATCH_SELECT} WHERE status IN ('submitted', 'in_progress') ORDER BY created_at`).map(
+      toBatch
+    );
+  }
+
+  /** Moves a set of newly-submitted jobs from `batch_queued` to `batch_pending`, tied to the batch that now covers them. */
+  markJobsBatchPending(jobIds: string[], batchId: string): void {
+    if (jobIds.length === 0) return;
+    this.db.run(
+      `UPDATE ai_jobs SET status = 'batch_pending', batch_id = ? WHERE id IN (${jobIds.map(() => '?').join(',')})`,
+      [batchId, ...jobIds]
+    );
+    saveDatabase(this.db);
+  }
+
+  updateBatchStatus(id: string, status: AiBatch['status']): void {
+    this.db.run(`UPDATE ai_batches SET status = ?, checked_at = ? WHERE id = ?`, [status, now(), id]);
+    saveDatabase(this.db);
+  }
+
+  getJobsForBatch(batchId: string): AiJob[] {
+    return all(this.db, `SELECT ${SELECT} WHERE batch_id = ?`, [batchId]).map(toJob);
   }
 
   /**
@@ -307,6 +398,8 @@ export class JobService {
       failed: 0,
       cancelled: 0,
       rate_limited: 0,
+      batch_queued: 0,
+      batch_pending: 0,
     };
     for (const row of rows) {
       const status = reqStr(row.status) as JobStatus;

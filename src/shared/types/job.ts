@@ -13,7 +13,20 @@ export type JobStatus =
    * usage windows) and resolves on its own -- the runner retries these after a
    * cooldown instead of surfacing them as errors.
    */
-  | 'rate_limited';
+  | 'rate_limited'
+  /**
+   * Chose to run as a provider batch, but not yet bundled into a submitted
+   * batch request. Deliberately excluded from `claimable()` -- the normal
+   * per-job runner must never pick these up, or they'd run twice.
+   */
+  | 'batch_queued'
+  /**
+   * Submitted to the provider as part of a batch and waiting on it, possibly
+   * for hours and across an app restart. Distinct from `running` so a restart
+   * never mistakes "waiting on a remote batch" for "crashed mid-call" and
+   * requeues it -- see recoverInterruptedJobs in schema.ts.
+   */
+  | 'batch_pending';
 
 export interface AiJob {
   id: string;
@@ -39,6 +52,27 @@ export interface AiJob {
   finishedAt: string | null;
   /** Timestamped console output captured from a CLI connector's subprocess, if this job used one. */
   cliLog: string | null;
+  /** Set once this job has been bundled into a submitted provider batch. Null for every normal job. */
+  batchId: string | null;
+}
+
+/**
+ * One provider-side batch request, covering many jobs. Lives independently of
+ * the jobs it covers because a batch is checked and resolved as a unit -- the
+ * provider only ever tells you "the whole batch is done", never one job at a
+ * time.
+ */
+export interface AiBatch {
+  id: string;
+  provider: string;
+  /** Null if the connector was since deleted -- the batch record and its jobs are kept for history. */
+  connectorId: string | null;
+  /** The id the provider itself assigned, used for every retrieve/results call. */
+  providerBatchId: string;
+  status: 'submitted' | 'in_progress' | 'ended' | 'failed';
+  createdAt: string;
+  /** Last time the app actually asked the provider for this batch's status. */
+  checkedAt: string | null;
 }
 
 /**
@@ -84,6 +118,14 @@ export interface EnqueueJobsInput {
   itemIds: string[];
   /** Overrides the task's bound connector for this batch only. */
   connectorId?: string | null;
+  /**
+   * Run via the provider's async Batch API instead of the normal queue --
+   * about half the token cost, but the answer may take up to a day and the
+   * app does not need to stay open while it waits. Only meaningful for
+   * connectors whose provider actually implements batching (currently
+   * Anthropic, appraise only); ignored otherwise.
+   */
+  runAsBatch?: boolean;
 }
 
 /**
@@ -109,4 +151,11 @@ export interface BatchEstimate {
   costSummary: string;
   /** Blocking or advisory problems, e.g. "this connector can't search the web". */
   warnings: string[];
+  /**
+   * Whether this task/connector pair can actually run through the provider's
+   * async Batch API. Only true for appraise on a connector whose provider
+   * implements batching (Anthropic, so far) -- the "Run as batch" checkbox is
+   * only worth offering when this is true.
+   */
+  canRunAsBatch: boolean;
 }

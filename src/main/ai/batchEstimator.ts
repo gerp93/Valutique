@@ -6,6 +6,7 @@ import { JobService } from '../database/jobService';
 import { PhotoService } from '../database/photoService';
 import { SettingsService } from '../database/settingsService';
 import { CLI_SLOWDOWN_FACTOR, estimateCost, formatCost, TASK_TOKEN_BASELINE } from './cost';
+import { ProviderRegistry } from './registry';
 
 /**
  * What a run will cost and how long it will take, shown before it starts.
@@ -24,7 +25,8 @@ export class BatchEstimator {
     private connectors: ConnectorService,
     private jobs: JobService,
     private photos: PhotoService,
-    private settings: SettingsService
+    private settings: SettingsService,
+    private registry: ProviderRegistry
   ) {}
 
   estimate(task: AiTask, tier: AiTier, itemIds: string[], connectorId?: string | null): BatchEstimate {
@@ -52,6 +54,7 @@ export class BatchEstimator {
         estimatedSeconds: 0,
         costSummary: 'No connector is set up for this task.',
         warnings: ['Add a connector in Settings and bind it to this task before running.'],
+        canRunAsBatch: false,
       };
     }
 
@@ -115,6 +118,9 @@ export class BatchEstimator {
       estimatedSeconds: seconds,
       costSummary: summarize(connector.billingMode, cost, connector.pricing.currency, connector.name, observed !== null),
       warnings,
+      // Phase 1 of batch mode only covers appraise, on whichever connectors'
+      // providers actually implement the async Batch API (Anthropic so far).
+      canRunAsBatch: task === 'appraise' && this.registry.supportsBatch(connector),
     };
   }
 
