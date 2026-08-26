@@ -53,12 +53,19 @@ export class CollectionService {
                 WHERE i2.collection_id = c.id) AS photo_count,
               (SELECT COALESCE(SUM(a.value_mid * i3.quantity), 0) FROM appraisals a
                  JOIN items i3 ON i3.id = a.item_id
-                WHERE i3.collection_id = c.id AND a.is_current = 1 AND a.value_mid IS NOT NULL) AS estimated_value,
+                WHERE i3.collection_id = c.id AND a.is_current = 1 AND a.value_mid IS NOT NULL
+                  AND i3.sale_status <> 'sold') AS estimated_value,
               (SELECT COUNT(*) FROM items i4
                 WHERE i4.collection_id = c.id
+                  AND i4.sale_status <> 'sold'
                   AND NOT EXISTS (SELECT 1 FROM appraisals a2
                                    WHERE a2.item_id = i4.id AND a2.is_current = 1 AND a2.value_mid IS NOT NULL)
-              ) AS unappraised_count
+              ) AS unappraised_count,
+              (SELECT COUNT(*) FROM items i5
+                WHERE i5.collection_id = c.id AND i5.sale_status = 'sold') AS sold_count,
+              (SELECT COALESCE(SUM(i6.sold_price * i6.quantity), 0) FROM items i6
+                WHERE i6.collection_id = c.id AND i6.sale_status = 'sold'
+                  AND i6.sold_price IS NOT NULL) AS sold_total
          FROM collections c
         ORDER BY c.name COLLATE NOCASE`
     );
@@ -69,6 +76,8 @@ export class CollectionService {
       photoCount: reqNum(row.photo_count),
       estimatedValue: reqNum(row.estimated_value),
       unappraisedCount: reqNum(row.unappraised_count),
+      soldCount: reqNum(row.sold_count),
+      soldTotal: reqNum(row.sold_total),
     }));
   }
 

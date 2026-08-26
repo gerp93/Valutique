@@ -52,6 +52,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   }, []);
 
   const total = collections.reduce((sum, collection) => sum + collection.estimatedValue, 0);
+  const soldTotal = collections.reduce((sum, collection) => sum + collection.soldTotal, 0);
+  const soldCount = collections.reduce((sum, collection) => sum + collection.soldCount, 0);
   const activeBatches = Object.values(batches).filter((batch) => batch.status !== 'failed');
 
   return (
@@ -127,7 +129,10 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="sidebar-footer">
             {collections.length > 0 && (
               <div style={{ marginBottom: 6 }}>
-                Estimated total {formatMoney(total)}
+                <div>Still owned {formatMoney(total)}</div>
+                {soldCount > 0 && (
+                  <div title={`${soldCount} sold`}>Sold {formatMoney(soldTotal)}</div>
+                )}
               </div>
             )}
             {version && <div>v{version}</div>}

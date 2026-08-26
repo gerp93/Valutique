@@ -29,6 +29,9 @@ export default function CollectionDetail() {
   // On by default: the usual reason to open a collection is to look at what you
   // still own. Sold pieces stay in the data and are one click away.
   const [hideSold, setHideSold] = useState(true);
+  // Fetched separately: the main list usually hides these, but what they
+  // fetched still has to be totalled somewhere.
+  const [soldItems, setSoldItems] = useState<ItemListEntry[]>([]);
 
   const [importing, setImporting] = useState(false);
   // A batch reading and grouping in the main process. The dialog closes as soon
@@ -43,7 +46,7 @@ export default function CollectionDetail() {
 
   const refresh = useCallback(async () => {
     if (!collectionId) return;
-    const [nextCollection, nextFields, nextItems, nextLocations, nextDuplicates] = await Promise.all([
+    const [nextCollection, nextFields, nextItems, nextSold, nextLocations, nextDuplicates] = await Promise.all([
       window.valutique.collections.getById(collectionId),
       window.valutique.fields.getForCollection(collectionId),
       window.valutique.items.list({
@@ -53,9 +56,12 @@ export default function CollectionDetail() {
         appraisalState: appraisalFilter || undefined,
         hideSold,
       }),
+      // Unfiltered by the list's own filters: this is a total, not a view.
+      window.valutique.items.list({ collectionId, saleStatus: 'sold' }),
       window.valutique.items.locations(collectionId),
       window.valutique.duplicates.findAll(collectionId),
     ]);
+    setSoldItems(nextSold);
 
     setCollection(nextCollection);
     setFields(nextFields);
@@ -78,15 +84,22 @@ export default function CollectionDetail() {
   const itemNoun = collection?.itemNoun ?? 'item';
 
   const stats = useMemo(() => {
-    const valued = items.filter((item) => item.estimatedValue !== null);
+    // Sold pieces never count toward what the collection is worth, whether or
+    // not they happen to be visible in the list right now.
+    const owned = items.filter((item) => item.saleStatus !== 'sold');
+    const valued = owned.filter((item) => item.estimatedValue !== null);
     const total = valued.reduce((sum, item) => sum + (item.estimatedValue ?? 0) * item.quantity, 0);
     return {
       total,
+      ownedCount: owned.length,
+      soldCount: soldItems.length,
+      soldTotal: soldItems.reduce((sum, item) => sum + (item.soldPrice ?? 0) * item.quantity, 0),
+      soldUnpriced: soldItems.filter((item) => item.soldPrice === null).length,
       valuedCount: valued.length,
       pending: items.filter((item) => item.aiStatus === 'queued' || item.aiStatus === 'running').length,
       errored: items.filter((item) => item.aiStatus === 'error').length,
     };
-  }, [items]);
+  }, [items, soldItems]);
 
   const toggleSelection = (id: string) => {
     const next = new Set(selected);
@@ -174,9 +187,19 @@ export default function CollectionDetail() {
           <div className="stat-sub">
             {/* Never present a total without saying how much of the collection
                 it actually covers. */}
-            from {stats.valuedCount} of {items.length} {itemNoun}s valued
+            from {stats.valuedCount} of {stats.ownedCount} {itemNoun}s still owned
           </div>
         </div>
+        {stats.soldCount > 0 && (
+          <div className="card">
+            <div className="stat-label">Sold</div>
+            <div className="stat-value">{formatMoney(stats.soldTotal)}</div>
+            <div className="stat-sub">
+              {stats.soldCount} {stats.soldCount === 1 ? itemNoun : `${itemNoun}s`}
+              {stats.soldUnpriced > 0 && ` · ${stats.soldUnpriced} with no price recorded`}
+            </div>
+          </div>
+        )}
         <div className="card">
           <div className="stat-label">In progress</div>
           <div className="stat-value">{stats.pending}</div>

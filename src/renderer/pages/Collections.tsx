@@ -63,6 +63,11 @@ export default function Collections() {
                   {collection.itemCount} {collection.itemCount === 1 ? collection.itemNoun : `${collection.itemNoun}s`}
                   {collection.photoCount > 0 && ` · ${collection.photoCount} photos`}
                 </div>
+                {collection.soldCount > 0 && (
+                  <span className="pill">
+                    {collection.soldCount} sold · {formatMoney(collection.soldTotal)}
+                  </span>
+                )}
                 {collection.unappraisedCount > 0 && (
                   <div className="item-card-meta">
                     {/* The total is only as complete as the appraisals behind

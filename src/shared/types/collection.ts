@@ -25,8 +25,15 @@ export interface UpdateCollectionInput {
 export interface CollectionSummary extends Collection {
   itemCount: number;
   photoCount: number;
-  /** Sum of the current appraisal midpoint across items that have one. */
+  /**
+   * Sum of the current appraisal midpoint across items still owned. Sold pieces
+   * are excluded: this answers "what is my collection worth", and something
+   * already sold is not part of it -- what it fetched is in `soldTotal`.
+   */
   estimatedValue: number;
-  /** Items with no current appraisal, so the user knows the total is incomplete. */
+  /** Items still owned with no current appraisal, so the user knows the total is incomplete. */
   unappraisedCount: number;
+  soldCount: number;
+  /** What sold pieces actually fetched, which is money in hand rather than an estimate. */
+  soldTotal: number;
 }
