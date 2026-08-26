@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { QueueState } from '@shared/types/job';
+import { FailedJob, QueueState } from '@shared/types/job';
+import { AI_TASK_LABELS, AI_TIER_LABELS } from '@shared/types/connector';
 import { formatDuration, formatRelative } from '../utils/format';
 
 /**
@@ -13,6 +14,7 @@ import { formatDuration, formatRelative } from '../utils/format';
 export default function QueueBar() {
   const [state, setState] = useState<QueueState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewingFailed, setReviewingFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,8 +69,8 @@ export default function QueueBar() {
 
       <div className="queue-bar-actions">
         {counts.failed > 0 && (
-          <button className="btn btn-small" disabled={busy} onClick={() => void run(() => window.valutique.queue.retryFailed())}>
-            Retry {counts.failed} failed
+          <button className="btn btn-small" disabled={busy} onClick={() => setReviewingFailed(true)}>
+            {counts.failed} failed
           </button>
         )}
         {pending > 0 &&
@@ -86,6 +88,113 @@ export default function QueueBar() {
             Cancel
           </button>
         )}
+      </div>
+
+      {reviewingFailed && (
+        <FailedJobsDialog
+          onClose={() => setReviewingFailed(false)}
+          onRetried={() => {
+            setReviewingFailed(false);
+            void window.valutique.queue.getState().then(setState);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Lists what actually failed and lets the user choose. Retrying everything
+ * blindly was the old behaviour and it was dangerous: most failures had already
+ * been redone successfully, so "retry all" meant paying to recompute results
+ * the items already had.
+ */
+function FailedJobsDialog({ onClose, onRetried }: { onClose: () => void; onRetried: () => void }) {
+  const [jobs, setJobs] = useState<FailedJob[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [retrying, setRetrying] = useState(false);
+
+  useEffect(() => {
+    void window.valutique.queue.failedJobs().then((found) => {
+      setJobs(found);
+      setSelected(new Set(found.map((job) => job.id)));
+    });
+  }, []);
+
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await window.valutique.queue.retryFailed([...selected]);
+      onRetried();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={retrying ? undefined : onClose}>
+      <div className="modal modal-wide" onClick={(event) => event.stopPropagation()}>
+        <h2>Failed jobs</h2>
+        <p className="card-hint">
+          Only failures that have not since been redone successfully are listed. Anything retried elsewhere and
+          finished has dropped off on its own.
+        </p>
+
+        {jobs === null ? (
+          <p className="text-muted">Loading…</p>
+        ) : jobs.length === 0 ? (
+          <p className="text-muted">Nothing left to retry.</p>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <button className="btn btn-small" onClick={() => setSelected(new Set(jobs.map((j) => j.id)))}>
+                Select all
+              </button>
+              <button className="btn btn-small" onClick={() => setSelected(new Set())}>
+                Select none
+              </button>
+            </div>
+
+            <div className="failed-job-list">
+              {jobs.map((job) => (
+                <label key={job.id} className="failed-job">
+                  <input type="checkbox" checked={selected.has(job.id)} onChange={() => toggle(job.id)} />
+                  <span className="failed-job-body">
+                    <span className="failed-job-title">
+                      {job.itemName?.trim() || 'Untitled item'}
+                      <span className="pill">{AI_TASK_LABELS[job.task]}</span>
+                      <span className="pill">{AI_TIER_LABELS[job.tier]}</span>
+                    </span>
+                    <span className="failed-job-error">{job.error || 'No error recorded.'}</span>
+                    <span className="failed-job-meta">
+                      {job.attempts} {job.attempts === 1 ? 'attempt' : 'attempts'} · {formatRelative(job.failedAt)}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={retrying}>
+            Close
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={retrying || selected.size === 0}
+            onClick={() => void retry()}
+          >
+            {retrying ? 'Queueing…' : `Retry ${selected.size} selected`}
+          </button>
+        </div>
       </div>
     </div>
   );

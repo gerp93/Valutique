@@ -20,7 +20,7 @@ import {
   CreateConnectorInput,
   UpdateConnectorInput,
 } from '@shared/types/connector';
-import { AiJob, BatchEstimate, CliLogEvent, QueueState } from '@shared/types/job';
+import { AiJob, BatchEstimate, CliLogEvent, FailedJob, QueueState } from '@shared/types/job';
 import { CliEnvironment, CliInstallResult, CliStatus } from '@shared/types/cli';
 import { UsageReport } from '@shared/types/usage';
 import {
@@ -119,7 +119,8 @@ export interface ValutiqueApi {
     pause(): Promise<QueueState>;
     resume(): Promise<QueueState>;
     cancelAll(): Promise<number>;
-    retryFailed(): Promise<number>;
+    failedJobs(): Promise<FailedJob[]>;
+    retryFailed(jobIds?: string[]): Promise<number>;
     clearHistory(): Promise<{ success: boolean }>;
     recentJobs(limit?: number): Promise<AiJob[]>;
     jobsForItem(itemId: string): Promise<AiJob[]>;

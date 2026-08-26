@@ -1,6 +1,6 @@
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { AiJob, JobStatus } from '../../shared/types/job';
+import { AiJob, FailedJob, JobStatus } from '../../shared/types/job';
 import { AiTask, AiTier } from '../../shared/types/connector';
 import { all, one, count, reqStr, str, num, reqNum, now, Row } from './helpers';
 import { saveDatabase } from './schema';
@@ -28,6 +28,19 @@ function toJob(row: Row): AiJob {
     cliLog: str(row.cli_log),
   };
 }
+
+/**
+ * True when nothing has since redone this job successfully. Same item, same
+ * task, finished later. A job with no item (field suggestions) can never be
+ * superseded this way, and stays actionable.
+ */
+const NOT_SUPERSEDED = `
+  NOT EXISTS (
+    SELECT 1 FROM ai_jobs d
+     WHERE d.item_id = f.item_id AND d.task = f.task
+       AND d.status = 'done' AND d.created_at > f.created_at
+  )
+`;
 
 const SELECT = `
   id, task, tier, item_id, collection_id, connector_id, status, attempts, error, not_before,
@@ -237,14 +250,52 @@ export class JobService {
   }
 
   /** Puts every failed job back on the queue. The "retry all" button. */
-  requeueFailed(): number {
-    const failed = count(this.db, `SELECT COUNT(*) FROM ai_jobs WHERE status = 'failed'`);
+  /**
+   * Retries failed jobs -- by default only the ones still worth retrying.
+   *
+   * A failure that was later redone successfully is history, not a to-do. Those
+   * rows stay in the table (they really happened, and the cost surface reads
+   * them) but re-running them would spend money re-deriving results the item
+   * already has, and overwrite them with the output of a second call.
+   */
+  requeueFailed(jobIds?: string[]): number {
+    if (jobIds && jobIds.length === 0) return 0;
+
+    const where = jobIds
+      ? `status = 'failed' AND id IN (${jobIds.map(() => '?').join(', ')})`
+      : `status = 'failed' AND ${NOT_SUPERSEDED}`;
+    const params = jobIds ?? [];
+
+    const affected = count(this.db, `SELECT COUNT(*) FROM ai_jobs f WHERE ${where}`, params);
     this.db.run(
       `UPDATE ai_jobs SET status = 'queued', attempts = 0, error = NULL, not_before = NULL, finished_at = NULL
-        WHERE status = 'failed'`
+        WHERE id IN (SELECT id FROM ai_jobs f WHERE ${where})`,
+      params
     );
     saveDatabase(this.db);
-    return failed;
+    return affected;
+  }
+
+  /** The failures still worth showing: newest first, with the item they belong to. */
+  getFailed(): FailedJob[] {
+    return all(
+      this.db,
+      `SELECT f.id, f.task, f.tier, f.item_id, f.error, f.attempts, f.finished_at, f.created_at,
+              i.name AS item_name
+         FROM ai_jobs f
+         LEFT JOIN items i ON i.id = f.item_id
+        WHERE f.status = 'failed' AND ${NOT_SUPERSEDED}
+        ORDER BY COALESCE(f.finished_at, f.created_at) DESC`
+    ).map((row) => ({
+      id: reqStr(row.id),
+      task: reqStr(row.task) as AiTask,
+      tier: reqStr(row.tier, 'deep') as AiTier,
+      itemId: str(row.item_id),
+      itemName: str(row.item_name),
+      error: str(row.error),
+      attempts: reqNum(row.attempts),
+      failedAt: str(row.finished_at) ?? reqStr(row.created_at),
+    }));
   }
 
   getCounts(): Record<JobStatus, number> {
@@ -261,6 +312,15 @@ export class JobService {
       const status = reqStr(row.status) as JobStatus;
       if (status in counts) counts[status] = reqNum(row.n);
     }
+
+    // Reported as what the user could act on, not as a running total of
+    // everything that ever went wrong. Without this the button offers to retry
+    // work that has already been redone.
+    counts.failed = count(
+      this.db,
+      `SELECT COUNT(*) FROM ai_jobs f WHERE f.status = 'failed' AND ${NOT_SUPERSEDED}`
+    );
+
     return counts;
   }
 

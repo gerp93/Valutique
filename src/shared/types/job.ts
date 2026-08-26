@@ -41,6 +41,22 @@ export interface AiJob {
   cliLog: string | null;
 }
 
+/**
+ * A failure still worth acting on -- one that has not since been redone
+ * successfully. Shown so the user can pick what to retry instead of re-running
+ * everything that ever went wrong.
+ */
+export interface FailedJob {
+  id: string;
+  task: AiTask;
+  tier: AiTier;
+  itemId: string | null;
+  itemName: string | null;
+  error: string | null;
+  attempts: number;
+  failedAt: string;
+}
+
 /** One line of live CLI output, broadcast as a job runs. */
 export interface CliLogEvent {
   jobId: string;

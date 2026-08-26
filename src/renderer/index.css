@@ -1231,3 +1231,55 @@ body.bubblegum-theme textarea {
     opacity: 0.5;
   }
 }
+
+/* --- failed job review --- */
+
+.failed-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 48vh;
+  overflow-y: auto;
+}
+
+.failed-job {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 9px 11px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.failed-job:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.failed-job-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.failed-job-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-weight: 600;
+}
+
+.failed-job-error {
+  font-size: 12px;
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
+.failed-job-meta {
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}

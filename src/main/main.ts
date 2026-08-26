@@ -615,7 +615,8 @@ function registerIpcHandlers() {
     return runner.getState();
   });
   ipcMain.handle('queue:cancelAll', () => runner.cancelAll());
-  ipcMain.handle('queue:retryFailed', () => jobs.requeueFailed());
+  ipcMain.handle('queue:failedJobs', () => jobs.getFailed());
+  ipcMain.handle('queue:retryFailed', (_, jobIds?: string[]) => jobs.requeueFailed(jobIds));
   ipcMain.handle('queue:clearHistory', () => {
     jobs.clearHistory();
     return { success: true };
