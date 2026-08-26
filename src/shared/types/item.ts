@@ -1,3 +1,18 @@
+/**
+ * Where a piece is in the owner's hands: kept, offered, or gone. Universal
+ * across every collection -- it is true of any collectible, and it filters the
+ * list, which a per-collection custom field could not be relied on to do.
+ */
+export type SaleStatus = 'none' | 'for_sale' | 'sold';
+
+export const SALE_STATUSES: SaleStatus[] = ['none', 'for_sale', 'sold'];
+
+export const SALE_STATUS_LABELS: Record<SaleStatus, string> = {
+  none: 'Not for sale',
+  for_sale: 'For sale',
+  sold: 'Sold',
+};
+
 import { Appraisal } from './appraisal';
 import { Photo } from './photo';
 import { AiTier } from './connector';
@@ -51,6 +66,12 @@ export interface Item {
   quantity: number;
   acquiredDate: string | null;
   acquiredPrice: number | null;
+  saleStatus: SaleStatus;
+  /** What it is listed at, while for sale. */
+  askingPrice: number | null;
+  soldPrice: number | null;
+  soldDate: string | null;
+  soldTo: string | null;
   aiStatus: ItemAiStatus;
   /** Which tier ('quick' or 'deep') produced the item's current identify result, if any. */
   aiTier: AiTier | null;
@@ -121,6 +142,11 @@ export interface CreateItemInput {
   quantity?: number;
   acquiredDate?: string | null;
   acquiredPrice?: number | null;
+  saleStatus?: SaleStatus;
+  askingPrice?: number | null;
+  soldPrice?: number | null;
+  soldDate?: string | null;
+  soldTo?: string | null;
 }
 
 export interface UpdateItemInput {
@@ -133,6 +159,11 @@ export interface UpdateItemInput {
   quantity?: number;
   acquiredDate?: string | null;
   acquiredPrice?: number | null;
+  saleStatus?: SaleStatus;
+  askingPrice?: number | null;
+  soldPrice?: number | null;
+  soldDate?: string | null;
+  soldTo?: string | null;
 }
 
 export interface ItemFilter {
@@ -143,4 +174,7 @@ export interface ItemFilter {
   /** 'appraised' | 'unappraised' | undefined for all. */
   appraisalState?: 'appraised' | 'unappraised';
   aiStatus?: ItemAiStatus;
+  saleStatus?: SaleStatus;
+  /** Sold pieces are hidden by default: the common case is browsing what you still own. */
+  hideSold?: boolean;
 }

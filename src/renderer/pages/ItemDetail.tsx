@@ -2,8 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Appraisal } from '@shared/types/appraisal';
 import { FieldDef } from '@shared/types/fieldDef';
-import { CONDITION_GRADES, CONDITION_LABELS, ConditionGrade, ItemDetail as ItemDetailType } from '@shared/types/item';
+import {
+  CONDITION_GRADES,
+  CONDITION_LABELS,
+  ConditionGrade,
+  ItemDetail as ItemDetailType,
+  SALE_STATUSES,
+  SALE_STATUS_LABELS,
+  SaleStatus,
+} from '@shared/types/item';
 import { AiTask, AiTier, AI_TIER_LABELS } from '@shared/types/connector';
+import { AiJob } from '@shared/types/job';
 import { ReducedSizePhotoCheck } from '@shared/types/photo';
 import PhotoImage from '../components/PhotoImage';
 import PhotoLightbox from '../components/PhotoLightbox';
@@ -23,6 +32,10 @@ export default function ItemDetail() {
   const [item, setItem] = useState<ItemDetailType | null>(null);
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [runTask, setRunTask] = useState<AiTask | null>(null);
+  // Valuations are only half the story: an identify run changes the item's name,
+  // description and fields, and the history tab claimed to be the record of what
+  // the AI did to this item.
+  const [jobHistory, setJobHistory] = useState<AiJob[]>([]);
   const [tab, setTab] = useState<'details' | 'valuation' | 'history'>('details');
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -46,6 +59,7 @@ export default function ItemDetail() {
     if (!itemId) return;
     const detail = await window.valutique.items.getDetail(itemId);
     setItem(detail);
+    setJobHistory(await window.valutique.queue.jobsForItem(itemId));
     if (detail) {
       setFields(await window.valutique.fields.getForCollection(detail.collectionId));
     }
@@ -276,7 +290,7 @@ export default function ItemDetail() {
               Valuation
             </button>
             <button className={`tab-button${tab === 'history' ? ' active' : ''}`} onClick={() => setTab('history')}>
-              History ({item.appraisalHistory.length})
+              History ({item.appraisalHistory.length + jobHistory.filter((job) => job.task === 'identify').length})
             </button>
           </div>
 
@@ -446,6 +460,65 @@ export default function ItemDetail() {
                 </div>
               </div>
 
+              <div className="field">
+                <label>Sale</label>
+                <select
+                  value={item.saleStatus}
+                  onChange={(event) => void saveBase({ saleStatus: event.target.value as SaleStatus })}
+                >
+                  {SALE_STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {SALE_STATUS_LABELS[status]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {item.saleStatus === 'for_sale' && (
+                <div className="field">
+                  <label>Asking price</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    defaultValue={item.askingPrice ?? ''}
+                    onBlur={(event) =>
+                      void saveBase({ askingPrice: event.target.value ? Number(event.target.value) : null })
+                    }
+                  />
+                </div>
+              )}
+
+              {item.saleStatus === 'sold' && (
+                <div className="grid-2">
+                  <div className="field">
+                    <label>Sold for</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      defaultValue={item.soldPrice ?? ''}
+                      onBlur={(event) =>
+                        void saveBase({ soldPrice: event.target.value ? Number(event.target.value) : null })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Sold on</label>
+                    <input
+                      type="date"
+                      defaultValue={item.soldDate ?? ''}
+                      onBlur={(event) => void saveBase({ soldDate: event.target.value || null })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Sold to</label>
+                    <input
+                      defaultValue={item.soldTo ?? ''}
+                      onBlur={(event) => void saveBase({ soldTo: event.target.value.trim() || null })}
+                    />
+                  </div>
+                </div>
+              )}
+
               <button
                 className="btn btn-danger btn-small"
                 onClick={async () => {
@@ -462,38 +535,83 @@ export default function ItemDetail() {
 
           {tab === 'history' && (
             <div className="card">
-              {item.appraisalHistory.length === 0 ? (
-                <p className="text-muted">No valuations yet.</p>
-              ) : (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>When</th>
-                      <th>Value</th>
-                      <th>By</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {item.appraisalHistory.map((appraisal) => (
-                      <tr key={appraisal.id}>
-                        <td>{formatDateTime(appraisal.createdAt)}</td>
-                        <td>
-                          {formatMoney(appraisal.valueMid, appraisal.currency)}
-                          {appraisal.isCurrent && <span className="pill pill-good" style={{ marginLeft: 6 }}>current</span>}
-                        </td>
-                        <td className="text-muted">
-                          {appraisal.connectorLabel} <TierPill tier={appraisal.tier} />
-                          {appraisal.searchUnavailable && appraisal.tier !== 'quick' && (
-                            <div>
-                              <span className="pill pill-warn">no web search</span>
-                            </div>
-                          )}
-                        </td>
+              {(() => {
+                // Valuations and identify runs interleaved on one timeline: both
+                // changed this item, and which happened first is usually the
+                // question being asked.
+                const entries = [
+                  ...item.appraisalHistory.map((appraisal) => ({
+                    key: appraisal.id,
+                    at: appraisal.createdAt,
+                    kind: 'Valuation',
+                    detail: (
+                      <>
+                        {formatMoney(appraisal.valueMid, appraisal.currency)}
+                        {appraisal.isCurrent && (
+                          <span className="pill pill-good" style={{ marginLeft: 6 }}>
+                            current
+                          </span>
+                        )}
+                      </>
+                    ),
+                    by: (
+                      <>
+                        {appraisal.connectorLabel} <TierPill tier={appraisal.tier} />
+                        {appraisal.searchUnavailable && appraisal.tier !== 'quick' && (
+                          <div>
+                            <span className="pill pill-warn">no web search</span>
+                          </div>
+                        )}
+                      </>
+                    ),
+                  })),
+                  ...jobHistory
+                    .filter((job) => job.task === 'identify')
+                    .map((job) => ({
+                      key: job.id,
+                      at: job.finishedAt ?? job.createdAt,
+                      kind: 'Identified',
+                      detail:
+                        job.status === 'done' ? (
+                          <span className="text-muted">Name, description and fields updated</span>
+                        ) : (
+                          <span className="pill pill-bad">{job.status}</span>
+                        ),
+                      by: (
+                        <>
+                          {job.connectorId ? '' : 'Unknown connector '}
+                          <TierPill tier={job.tier} />
+                          {job.error && <div className="text-muted">{job.error}</div>}
+                        </>
+                      ),
+                    })),
+                ].sort((a, b) => b.at.localeCompare(a.at));
+
+                if (entries.length === 0) return <p className="text-muted">Nothing has run on this item yet.</p>;
+
+                return (
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>When</th>
+                        <th>What</th>
+                        <th>Result</th>
+                        <th>By</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    </thead>
+                    <tbody>
+                      {entries.map((entry) => (
+                        <tr key={entry.key}>
+                          <td>{formatDateTime(entry.at)}</td>
+                          <td>{entry.kind}</td>
+                          <td>{entry.detail}</td>
+                          <td className="text-muted">{entry.by}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
           )}
         </div>

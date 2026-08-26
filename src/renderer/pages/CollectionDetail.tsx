@@ -26,6 +26,9 @@ export default function CollectionDetail() {
   const [search, setSearch] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
   const [appraisalFilter, setAppraisalFilter] = useState<'' | 'appraised' | 'unappraised'>('');
+  // On by default: the usual reason to open a collection is to look at what you
+  // still own. Sold pieces stay in the data and are one click away.
+  const [hideSold, setHideSold] = useState(true);
 
   const [importing, setImporting] = useState(false);
   // A batch reading and grouping in the main process. The dialog closes as soon
@@ -48,6 +51,7 @@ export default function CollectionDetail() {
         search: search || undefined,
         location: locationFilter || undefined,
         appraisalState: appraisalFilter || undefined,
+        hideSold,
       }),
       window.valutique.items.locations(collectionId),
       window.valutique.duplicates.findAll(collectionId),
@@ -58,7 +62,7 @@ export default function CollectionDetail() {
     setItems(nextItems);
     setLocations(nextLocations);
     setDuplicates(nextDuplicates);
-  }, [collectionId, search, locationFilter, appraisalFilter]);
+  }, [collectionId, search, locationFilter, appraisalFilter, hideSold]);
 
   useEffect(() => {
     void refresh();
@@ -238,12 +242,20 @@ export default function CollectionDetail() {
             <option value="unappraised">Not yet valued</option>
           </select>
         </div>
+        <div className="filter-field">
+          <label>Sold</label>
+          <select value={hideSold ? 'hide' : 'show'} onChange={(event) => setHideSold(event.target.value === 'hide')}>
+            <option value="hide">Hidden</option>
+            <option value="show">Shown</option>
+          </select>
+        </div>
         <button
           className="btn btn-small"
           onClick={() => {
             setSearch('');
             setLocationFilter('');
             setAppraisalFilter('');
+            setHideSold(true);
           }}
         >
           Clear

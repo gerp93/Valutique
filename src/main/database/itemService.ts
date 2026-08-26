@@ -1,6 +1,7 @@
 import { Database, SqlValue } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
+  SaleStatus,
   CONDITION_GRADES,
   ConditionGrade,
   CreateItemInput,
@@ -35,6 +36,11 @@ function toItem(row: Row): Item {
     quantity: reqNum(row.quantity, 1),
     acquiredDate: str(row.acquired_date),
     acquiredPrice: num(row.acquired_price),
+    saleStatus: reqStr(row.sale_status, 'none') as SaleStatus,
+    askingPrice: num(row.asking_price),
+    soldPrice: num(row.sold_price),
+    soldDate: str(row.sold_date),
+    soldTo: str(row.sold_to),
     aiStatus: reqStr(row.ai_status, 'none') as ItemAiStatus,
     aiTier: (str(row.ai_tier) as Item['aiTier']) ?? null,
     aiLastRunAt: str(row.ai_last_run_at),
@@ -46,7 +52,8 @@ function toItem(row: Row): Item {
 
 const ITEM_COLUMNS = `
   id, collection_id, name, description, notes, ai_notes, location, condition_grade, condition_notes,
-  quantity, acquired_date, acquired_price, ai_status, ai_tier, ai_last_run_at, ai_error, created_at, updated_at
+  quantity, acquired_date, acquired_price, sale_status, asking_price, sold_price, sold_date, sold_to,
+  ai_status, ai_tier, ai_last_run_at, ai_error, created_at, updated_at
 `;
 
 /**
@@ -127,6 +134,12 @@ export class ItemService {
     if (filter.aiStatus) {
       where.push('i.ai_status = ?');
       params.push(filter.aiStatus);
+    }
+    if (filter.saleStatus) {
+      where.push('i.sale_status = ?');
+      params.push(filter.saleStatus);
+    } else if (filter.hideSold) {
+      where.push("i.sale_status <> 'sold'");
     }
     if (filter.appraisalState === 'appraised') {
       where.push('EXISTS (SELECT 1 FROM appraisals a WHERE a.item_id = i.id AND a.is_current = 1 AND a.value_mid IS NOT NULL)');
@@ -232,6 +245,11 @@ export class ItemService {
       quantity: input.quantity,
       acquired_date: input.acquiredDate === undefined ? undefined : input.acquiredDate,
       acquired_price: input.acquiredPrice === undefined ? undefined : input.acquiredPrice,
+      sale_status: input.saleStatus,
+      asking_price: input.askingPrice === undefined ? undefined : input.askingPrice,
+      sold_price: input.soldPrice === undefined ? undefined : input.soldPrice,
+      sold_date: input.soldDate === undefined ? undefined : input.soldDate,
+      sold_to: input.soldTo === undefined ? undefined : input.soldTo,
     });
 
     if (update) {

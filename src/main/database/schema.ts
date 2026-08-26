@@ -151,6 +151,11 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
       quantity INTEGER NOT NULL DEFAULT 1,
       acquired_date TEXT,
       acquired_price REAL,
+      sale_status TEXT NOT NULL DEFAULT 'none',
+      asking_price REAL,
+      sold_price REAL,
+      sold_date TEXT,
+      sold_to TEXT,
       ai_status TEXT NOT NULL DEFAULT 'none',
       ai_tier TEXT,
       ai_last_run_at TEXT,
@@ -311,6 +316,25 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
     db.run(`ALTER TABLE items ADD COLUMN ai_notes TEXT`);
   } catch (e) {
     // Already present on databases created after this change.
+  }
+
+  // Migration: whether a piece is being sold, and what it went for. Universal
+  // rather than a per-collection custom field: it is true of any collectible in
+  // any collection, it needs to filter the list, and a custom field cannot be
+  // relied on to exist. Modelled like acquired_price/acquired_date, which are
+  // the same kind of fact from the other end of ownership.
+  for (const column of [
+    `sale_status TEXT NOT NULL DEFAULT 'none'`,
+    `asking_price REAL`,
+    `sold_price REAL`,
+    `sold_date TEXT`,
+    `sold_to TEXT`,
+  ]) {
+    try {
+      db.run(`ALTER TABLE items ADD COLUMN ${column}`);
+    } catch (e) {
+      // Already present on databases created after this change.
+    }
   }
 
   // Migration: quick/deep tiers. Existing rows default to 'deep' -- today's
