@@ -117,8 +117,6 @@ export default function CollectionDetail() {
     await refresh();
   };
 
-  if (!collection) return <p className="text-muted">Loading…</p>;
-
   useEffect(() => {
     const offBatch = window.valutique.import.onBatch((next) => {
       if (next.collectionId !== collectionId) return;
@@ -140,6 +138,8 @@ export default function CollectionDetail() {
       if (found) setBatch(found);
     });
   }, [collectionId]);
+
+  if (!collection) return <p className="text-muted">Loading…</p>;
 
   const openReview = async () => {
     if (!batch || batch.status !== 'done') return;
