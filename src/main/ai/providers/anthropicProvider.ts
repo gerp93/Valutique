@@ -248,6 +248,15 @@ export class AnthropicProvider implements AiProvider, AiBatchProvider {
     }
   }
 
+  async cancelBatch(connector: AiConnector, providerBatchId: string): Promise<void> {
+    const client = this.client(connector);
+    try {
+      await client.messages.batches.cancel(providerBatchId);
+    } catch (err) {
+      throw translateError(err);
+    }
+  }
+
   async fetchBatchResults(connector: AiConnector, providerBatchId: string): Promise<AiBatchResult[]> {
     const client = this.client(connector);
     const model = connector.model || 'claude-opus-5';

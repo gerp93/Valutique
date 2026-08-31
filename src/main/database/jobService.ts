@@ -163,33 +163,15 @@ export class JobService {
     return grouped;
   }
 
-  /**
-   * Claims a batch locally before the provider has accepted anything --
-   * `status = 'submitting'`, no `provider_batch_id` yet. Callers must pair
-   * this synchronously (no `await` in between) with `markJobsBatchPending`
-   * for the same jobs: that's what stops an overlapping tick from reading
-   * the same still-`batch_queued` jobs and submitting them a second time
-   * while the first submission's network call is still in flight.
-   */
-  createSubmittingBatch(provider: string, connectorId: string): AiBatch {
+  createBatch(provider: string, connectorId: string, providerBatchId: string): AiBatch {
     const id = uuidv4();
     this.db.run(
       `INSERT INTO ai_batches (id, provider, connector_id, provider_batch_id, status, created_at)
-       VALUES (?, ?, ?, NULL, 'submitting', ?)`,
-      [id, provider, connectorId, now()]
+       VALUES (?, ?, ?, ?, 'submitted', ?)`,
+      [id, provider, connectorId, providerBatchId, now()]
     );
     saveDatabase(this.db);
     return this.getBatchById(id)!;
-  }
-
-  /** The provider accepted the submission -- records its id and flips the batch to pollable. */
-  setBatchSubmitted(id: string, providerBatchId: string): void {
-    this.db.run(`UPDATE ai_batches SET provider_batch_id = ?, status = 'submitted', checked_at = ? WHERE id = ?`, [
-      providerBatchId,
-      now(),
-      id,
-    ]);
-    saveDatabase(this.db);
   }
 
   getBatchById(id: string): AiBatch | null {
@@ -197,24 +179,24 @@ export class JobService {
     return row ? toBatch(row) : null;
   }
 
-  /**
-   * Batches still worth polling -- anything the provider hasn't reported as
-   * finished. Deliberately excludes 'submitting': those never reached the
-   * provider (or the app would have moved them to 'submitted'), so there is
-   * nothing to poll -- see recoverInterruptedJobs in schema.ts for how a
-   * crash mid-submission gets cleaned up instead.
-   */
+  /** Batches still worth polling -- anything the provider hasn't reported as finished. */
   getOpenBatches(): AiBatch[] {
     return all(this.db, `SELECT ${BATCH_SELECT} WHERE status IN ('submitted', 'in_progress') ORDER BY created_at`).map(
       toBatch
     );
   }
 
-  /** Moves a set of newly-claimed jobs from `batch_queued` to `batch_pending`, tied to the batch that now covers them. */
+  /**
+   * Moves a set of newly-submitted jobs from `batch_queued` to `batch_pending`,
+   * tied to the batch that now covers them. Only rows still `batch_queued` are
+   * claimed -- a concurrent cancel (or a second tick that somehow saw the same
+   * rows) must not resurrect a cancelled job or rewrite an already-pending one.
+   */
   markJobsBatchPending(jobIds: string[], batchId: string): void {
     if (jobIds.length === 0) return;
     this.db.run(
-      `UPDATE ai_jobs SET status = 'batch_pending', batch_id = ? WHERE id IN (${jobIds.map(() => '?').join(',')})`,
+      `UPDATE ai_jobs SET status = 'batch_pending', batch_id = ?
+        WHERE status = 'batch_queued' AND id IN (${jobIds.map(() => '?').join(',')})`,
       [batchId, ...jobIds]
     );
     saveDatabase(this.db);
@@ -225,14 +207,8 @@ export class JobService {
     saveDatabase(this.db);
   }
 
-  /**
-   * Jobs in this batch still waiting on a result. Filtered to `batch_pending`
-   * rather than every job the batch ever covered, so a batch reconciled more
-   * than once -- e.g. the app closed after some results were applied but
-   * before the batch itself was marked 'ended' -- never re-applies a result
-   * for a job that already moved on to 'done'/'failed'/'cancelled'.
-   */
-  getPendingJobsForBatch(batchId: string): AiJob[] {
+  /** Jobs still waiting on this batch -- already-applied or retried rows are left alone. */
+  getJobsForBatch(batchId: string): AiJob[] {
     return all(this.db, `SELECT ${SELECT} WHERE batch_id = ? AND status = 'batch_pending'`, [batchId]).map(toJob);
   }
 
@@ -362,26 +338,16 @@ export class JobService {
     saveDatabase(this.db);
   }
 
-  /**
-   * Also cancels outstanding batch jobs, not just the live queue. A
-   * `batch_queued` job hasn't been submitted to the provider yet, so
-   * cancelling it locally is the whole story. A `batch_pending` job has
-   * already been submitted and paid for -- there's no provider-side cancel
-   * wired up yet, so the underlying batch keeps running on Anthropic's side
-   * regardless -- but moving it out of `batch_pending` here means
-   * `getPendingJobsForBatch` no longer matches it, so its result is simply
-   * discarded rather than applied when the batch finishes, and the item is
-   * freed up to be re-queued immediately instead of staying blocked until a
-   * day-long batch resolves.
-   */
   cancelPending(): number {
-    const cancellable = ['queued', 'rate_limited', 'batch_queued', 'batch_pending'];
-    const placeholders = cancellable.map(() => '?').join(',');
-    const pending = count(this.db, `SELECT COUNT(*) FROM ai_jobs WHERE status IN (${placeholders})`, cancellable);
-    this.db.run(`UPDATE ai_jobs SET status = 'cancelled', finished_at = ? WHERE status IN (${placeholders})`, [
-      now(),
-      ...cancellable,
-    ]);
+    const pending = count(
+      this.db,
+      `SELECT COUNT(*) FROM ai_jobs WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`
+    );
+    this.db.run(
+      `UPDATE ai_jobs SET status = 'cancelled', finished_at = ?
+        WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`,
+      [now()]
+    );
     saveDatabase(this.db);
     return pending;
   }
