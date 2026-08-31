@@ -15,6 +15,12 @@ export interface UsageCounts {
 }
 
 /**
+ * Anthropic Message Batches token price vs a live call. Applied to the recorded
+ * job cost so Cost & Usage matches the ~half-price figure RunDialog quoted.
+ */
+export const BATCH_COST_FACTOR = 0.5;
+
+/**
  * Returns null -- not zero -- for connectors that aren't metered. A subscription
  * or local connector has no dollar cost to report, and showing "$0.00" would
  * imply a meter that was never running.

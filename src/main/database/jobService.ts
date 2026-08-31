@@ -186,11 +186,17 @@ export class JobService {
     );
   }
 
-  /** Moves a set of newly-submitted jobs from `batch_queued` to `batch_pending`, tied to the batch that now covers them. */
+  /**
+   * Moves a set of newly-submitted jobs from `batch_queued` to `batch_pending`,
+   * tied to the batch that now covers them. Only rows still `batch_queued` are
+   * claimed -- a concurrent cancel (or a second tick that somehow saw the same
+   * rows) must not resurrect a cancelled job or rewrite an already-pending one.
+   */
   markJobsBatchPending(jobIds: string[], batchId: string): void {
     if (jobIds.length === 0) return;
     this.db.run(
-      `UPDATE ai_jobs SET status = 'batch_pending', batch_id = ? WHERE id IN (${jobIds.map(() => '?').join(',')})`,
+      `UPDATE ai_jobs SET status = 'batch_pending', batch_id = ?
+        WHERE status = 'batch_queued' AND id IN (${jobIds.map(() => '?').join(',')})`,
       [batchId, ...jobIds]
     );
     saveDatabase(this.db);
@@ -201,8 +207,9 @@ export class JobService {
     saveDatabase(this.db);
   }
 
+  /** Jobs still waiting on this batch -- already-applied or retried rows are left alone. */
   getJobsForBatch(batchId: string): AiJob[] {
-    return all(this.db, `SELECT ${SELECT} WHERE batch_id = ?`, [batchId]).map(toJob);
+    return all(this.db, `SELECT ${SELECT} WHERE batch_id = ? AND status = 'batch_pending'`, [batchId]).map(toJob);
   }
 
   /**
@@ -332,10 +339,15 @@ export class JobService {
   }
 
   cancelPending(): number {
-    const pending = count(this.db, `SELECT COUNT(*) FROM ai_jobs WHERE status IN ('queued','rate_limited')`);
-    this.db.run(`UPDATE ai_jobs SET status = 'cancelled', finished_at = ? WHERE status IN ('queued','rate_limited')`, [
-      now(),
-    ]);
+    const pending = count(
+      this.db,
+      `SELECT COUNT(*) FROM ai_jobs WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`
+    );
+    this.db.run(
+      `UPDATE ai_jobs SET status = 'cancelled', finished_at = ?
+        WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`,
+      [now()]
+    );
     saveDatabase(this.db);
     return pending;
   }

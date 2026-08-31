@@ -105,4 +105,6 @@ export interface AiBatchProvider {
   pollBatch(connector: AiConnector, providerBatchId: string): Promise<'in_progress' | 'ended'>;
   /** Only meaningful once pollBatch reports 'ended'. One result per submitted item, in any order. */
   fetchBatchResults(connector: AiConnector, providerBatchId: string): Promise<AiBatchResult[]>;
+  /** Best-effort cancel of an in-flight provider batch so Cancel All can stop billed work. */
+  cancelBatch(connector: AiConnector, providerBatchId: string): Promise<void>;
 }
