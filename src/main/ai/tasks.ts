@@ -249,13 +249,21 @@ export class AiTasks {
    * provider for hours, a setting changed mid-flight could in principle make
    * this differ from what was actually requested -- rare enough not to be
    * worth threading extra state through the batch tables for.
+   *
+   * `shouldApply`, when given, is checked immediately before the appraisal is
+   * actually written -- not just at the top of this function -- because comp
+   * verification below can make a real network round-trip. A batch job
+   * cancelled while that's in flight must not still end up with a written
+   * valuation; re-checking right before the write is what actually closes
+   * that window, a check at the top alone would not.
    */
   async applyAppraiseResponse(
     itemId: string,
     tier: AiTier,
     connector: AiConnector,
     response: AiResponse,
-    started: number
+    started: number,
+    shouldApply?: () => boolean
   ): Promise<TaskOutcome> {
     const settings = this.settings.get();
     const canSearch = this.canSearchFor(tier, connector, settings.maxSearchesPerAppraisal);
@@ -268,6 +276,10 @@ export class AiTasks {
     // On quick, any comps the model names anyway are discarded rather than
     // stored unverified -- "no comps" is the promise this tier makes.
     const comps = tier === 'deep' ? await this.buildComps(payload.comps ?? [], response, settings.verifyCompUrls) : [];
+
+    if (shouldApply && !shouldApply()) {
+      throw new AiError('This run was cancelled before its result could be applied.', false);
+    }
 
     this.appraisals.create({
       itemId,

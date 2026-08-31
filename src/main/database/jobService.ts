@@ -270,13 +270,20 @@ export class JobService {
     saveDatabase(this.db);
   }
 
-  markDone(id: string, completion: JobCompletion): void {
+  /**
+   * Returns whether this actually took effect. Excludes an already-cancelled
+   * row on purpose: Cancel All can race a batch result landing (see
+   * JobRunner.applyBatchResult), and a job the user cancelled must stay
+   * cancelled rather than being resurrected as 'done' by a result that was
+   * already in flight when they clicked it.
+   */
+  markDone(id: string, completion: JobCompletion): boolean {
     this.db.run(
       `UPDATE ai_jobs
           SET status = 'done', finished_at = ?, error = NULL,
               tokens_in = ?, tokens_out = ?, web_searches = ?, cost_estimate = ?, duration_ms = ?,
               response_json = ?
-        WHERE id = ?`,
+        WHERE id = ? AND status != 'cancelled'`,
       [
         now(),
         completion.tokensIn ?? null,
@@ -288,16 +295,21 @@ export class JobService {
         id,
       ]
     );
+    const applied = this.db.getRowsModified() > 0;
     saveDatabase(this.db);
+    return applied;
   }
 
-  markFailed(id: string, error: string): void {
-    this.db.run(`UPDATE ai_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`, [
+  /** Returns whether this actually took effect -- see the note on markDone. */
+  markFailed(id: string, error: string): boolean {
+    this.db.run(`UPDATE ai_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ? AND status != 'cancelled'`, [
       error.slice(0, 4000),
       now(),
       id,
     ]);
+    const applied = this.db.getRowsModified() > 0;
     saveDatabase(this.db);
+    return applied;
   }
 
   /** Puts a job back on the queue with a delay. Used for transient errors. */
@@ -338,18 +350,30 @@ export class JobService {
     saveDatabase(this.db);
   }
 
-  cancelPending(): number {
-    const pending = count(
+  /**
+   * Cancels every pending job (live and batch) and returns the distinct item
+   * ids affected, so the caller can also clear their `ai_status` pill --
+   * cancelling the job alone leaves an item looking permanently "queued"
+   * otherwise, since nothing else resets it.
+   */
+  cancelPending(): { count: number; itemIds: string[] } {
+    const cancellable = ['queued', 'rate_limited', 'batch_queued', 'batch_pending'];
+    const placeholders = cancellable.map(() => '?').join(',');
+
+    const rows = all(
       this.db,
-      `SELECT COUNT(*) FROM ai_jobs WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`
+      `SELECT DISTINCT item_id FROM ai_jobs WHERE status IN (${placeholders}) AND item_id IS NOT NULL`,
+      cancellable
     );
-    this.db.run(
-      `UPDATE ai_jobs SET status = 'cancelled', finished_at = ?
-        WHERE status IN ('queued','rate_limited','batch_queued','batch_pending')`,
-      [now()]
-    );
+    const itemIds = rows.map((row) => reqStr(row.item_id));
+
+    const pending = count(this.db, `SELECT COUNT(*) FROM ai_jobs WHERE status IN (${placeholders})`, cancellable);
+    this.db.run(`UPDATE ai_jobs SET status = 'cancelled', finished_at = ? WHERE status IN (${placeholders})`, [
+      now(),
+      ...cancellable,
+    ]);
     saveDatabase(this.db);
-    return pending;
+    return { count: pending, itemIds };
   }
 
   /** Puts every failed job back on the queue. The "retry all" button. */

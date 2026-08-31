@@ -119,9 +119,15 @@ export class JobRunner {
       controller.abort();
     }
     void this.cancelOpenBatches();
-    const cancelled = this.jobs.cancelPending();
+    const { count, itemIds } = this.jobs.cancelPending();
+    // Cancelling the job alone leaves the item's status pill stuck on
+    // whatever it was ('queued', typically) forever -- nothing else resets
+    // it. 'none' is the same status a freshly-imported, never-processed item
+    // has; it only describes "no AI job in flight", not whether the item
+    // already has identify/appraise data from an earlier run.
+    for (const itemId of itemIds) this.items.setAiStatus(itemId, 'none');
     this.emit();
-    return cancelled;
+    return count;
   }
 
   getState(): QueueState {
@@ -348,27 +354,34 @@ export class JobRunner {
       // Duration is provider-call length for live jobs and feeds ETA averages.
       // A batch may sit for hours, so enqueue-to-apply would poison those
       // averages; there is no accurate provider runtime on the row either.
+      //
+      // shouldApply is re-checked by applyAppraiseResponse immediately before
+      // it writes the appraisal -- comp verification in there can make a real
+      // network call, so a Cancel All landing after the check above but
+      // before that write still needs to be caught right at the write itself.
       const outcome = await this.tasks.applyAppraiseResponse(
         current.itemId,
         current.tier,
         connector,
         result.response,
-        Date.now()
+        Date.now(),
+        () => this.jobs.getById(current.id)?.status === 'batch_pending'
       );
 
-      if (this.jobs.getById(current.id)?.status !== 'batch_pending') return;
-
-      this.jobs.markDone(current.id, {
+      // markDone itself refuses to resurrect a cancelled row (see JobService)
+      // -- only reflect "done" on the item when it actually took effect.
+      if (this.jobs.markDone(current.id, {
         tokensIn: outcome.tokensIn,
         tokensOut: outcome.tokensOut,
         webSearches: outcome.webSearches,
         costEstimate: outcome.costEstimate == null ? null : outcome.costEstimate * BATCH_COST_FACTOR,
         durationMs: null,
-      });
-      // No afterSuccess() equivalent needed here: that hook only chains
-      // identify -> appraise and feeds duplicate detection, both scoped to
-      // the identify task. Batch mode only covers appraise so far.
-      this.items.setAiStatus(current.itemId, 'done');
+      })) {
+        // No afterSuccess() equivalent needed here: that hook only chains
+        // identify -> appraise and feeds duplicate detection, both scoped to
+        // the identify task. Batch mode only covers appraise so far.
+        this.items.setAiStatus(current.itemId, 'done');
+      }
     } catch (err) {
       const error = err instanceof AiError ? err : new AiError(err instanceof Error ? err.message : String(err), true);
       this.markBatchJobFailed(current, error.message);
@@ -380,10 +393,11 @@ export class JobRunner {
     this.jobs.updateBatchStatus(batch.id, 'failed');
   }
 
+  /** Only reflects the failure on the item when the job row actually changed -- see JobService.markFailed. */
   private failJobs(jobs: AiJob[], message: string): void {
     for (const job of jobs) {
-      this.jobs.markFailed(job.id, message);
-      if (job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
+      const applied = this.jobs.markFailed(job.id, message);
+      if (applied && job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
     }
     this.emit();
   }
@@ -406,9 +420,10 @@ export class JobRunner {
     }
   }
 
+  /** No-ops on the item if the job was already cancelled -- see JobService.markFailed. */
   private markBatchJobFailed(job: AiJob, message: string): void {
-    this.jobs.markFailed(job.id, message);
-    if (job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
+    const applied = this.jobs.markFailed(job.id, message);
+    if (applied && job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
   }
 
   private async run(job: AiJob): Promise<void> {
