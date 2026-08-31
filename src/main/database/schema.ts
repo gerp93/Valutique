@@ -448,13 +448,16 @@ export async function initDatabase(dbPath?: string): Promise<Database> {
   // Checked and resolved as a unit -- the provider only ever reports "the
   // whole batch is done", never one job within it -- so batch state lives
   // here rather than being duplicated onto every job it covers.
+  // provider_batch_id starts NULL while status = 'submitting' -- claimed
+  // locally (see JobRunner.submitBatches) but not yet accepted by the
+  // provider, so there's nothing to poll yet.
   db.run(`
     CREATE TABLE IF NOT EXISTS ai_batches (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
       connector_id TEXT,
-      provider_batch_id TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'submitted',
+      provider_batch_id TEXT,
+      status TEXT NOT NULL DEFAULT 'submitting',
       created_at TEXT NOT NULL,
       checked_at TEXT,
       FOREIGN KEY (connector_id) REFERENCES ai_connectors(id) ON DELETE SET NULL
@@ -520,6 +523,18 @@ function seedSettings(db: Database): void {
 function recoverInterruptedJobs(db: Database): void {
   db.run(`UPDATE ai_jobs SET status = 'queued', not_before = NULL WHERE status = 'running'`);
   db.run(`UPDATE items SET ai_status = 'queued' WHERE ai_status = 'running'`);
+
+  // A batch stuck in 'submitting' can only mean the app crashed or quit
+  // between claiming its jobs and hearing back from the provider -- this is a
+  // single-instance app, so nothing else could be mid-submission right now.
+  // The submission never completed, so there's no provider batch to recover;
+  // put the jobs back to batch_queued so the next submission pass retries
+  // them, and drop the orphaned batch row.
+  db.run(
+    `UPDATE ai_jobs SET status = 'batch_queued', batch_id = NULL
+      WHERE batch_id IN (SELECT id FROM ai_batches WHERE status = 'submitting')`
+  );
+  db.run(`DELETE FROM ai_batches WHERE status = 'submitting'`);
 }
 
 export function saveDatabase(db: Database, dbPath?: string): void {

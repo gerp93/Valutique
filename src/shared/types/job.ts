@@ -67,9 +67,14 @@ export interface AiBatch {
   provider: string;
   /** Null if the connector was since deleted -- the batch record and its jobs are kept for history. */
   connectorId: string | null;
-  /** The id the provider itself assigned, used for every retrieve/results call. */
-  providerBatchId: string;
-  status: 'submitted' | 'in_progress' | 'ended' | 'failed';
+  /**
+   * The id the provider itself assigned, used for every retrieve/results
+   * call. Null only while `status` is 'submitting' -- claimed locally (its
+   * jobs are already `batch_pending`) but the provider hasn't accepted the
+   * submission yet, so there's nothing to poll.
+   */
+  providerBatchId: string | null;
+  status: 'submitting' | 'submitted' | 'in_progress' | 'ended' | 'failed';
   createdAt: string;
   /** Last time the app actually asked the provider for this batch's status. */
   checkedAt: string | null;

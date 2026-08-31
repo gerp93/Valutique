@@ -36,7 +36,12 @@ export default function QueueBar() {
   if (!state) return null;
 
   const { counts } = state;
-  const pending = counts.queued + counts.running + counts.rate_limited;
+  // Includes batch-only work -- a run submitted entirely as a provider batch
+  // has nothing in queued/running/rate_limited, and without this the bar
+  // (and its Pause/Cancel controls) would simply hide itself even while
+  // `state.running` is true and money is being spent in the background.
+  const pending = counts.queued + counts.running + counts.rate_limited + counts.batch_queued + counts.batch_pending;
+  const batchOnly = counts.queued + counts.running + counts.rate_limited === 0 && pending > 0;
   const finished = counts.done;
   const total = pending + finished;
 
@@ -57,7 +62,7 @@ export default function QueueBar() {
 
   return (
     <div className="queue-bar">
-      <span className="queue-bar-status">{describeStatus(state, pending)}</span>
+      <span className="queue-bar-status">{describeStatus(state, pending, batchOnly)}</span>
 
       {pending > 0 && (
         <div className="progress-track" title={`${finished} of ${total} done`}>
@@ -65,7 +70,7 @@ export default function QueueBar() {
         </div>
       )}
 
-      <span className="queue-bar-detail">{describeDetail(state, pending)}</span>
+      <span className="queue-bar-detail">{describeDetail(state, pending, batchOnly)}</span>
 
       <div className="queue-bar-actions">
         {counts.failed > 0 && (
@@ -200,16 +205,23 @@ function FailedJobsDialog({ onClose, onRetried }: { onClose: () => void; onRetri
   );
 }
 
-function describeStatus(state: QueueState, pending: number): string {
+function describeStatus(state: QueueState, pending: number, batchOnly: boolean): string {
   if (pending === 0) return `${state.counts.failed} failed`;
   if (state.paused) return 'Paused';
   if (state.counts.running > 0) return `Working on ${state.counts.running}`;
+  if (batchOnly) return 'Batch running';
   return 'Queued';
 }
 
-function describeDetail(state: QueueState, pending: number): string {
+function describeDetail(state: QueueState, pending: number, batchOnly: boolean): string {
   if (pending === 0) {
     return 'Nothing running. Retry the failed items, or open one to see what went wrong.';
+  }
+
+  // Nothing live to report an ETA or "currently appraising" for -- a batch
+  // resolves on the provider's own schedule, anywhere from minutes to a day.
+  if (batchOnly) {
+    return `${pending} waiting on the provider — results appear whenever this app is next running, no need to keep it open.`;
   }
 
   const parts: string[] = [`${pending} to go`];
