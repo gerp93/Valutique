@@ -114,7 +114,7 @@ export interface ValutiqueApi {
   };
   queue: {
     getState(): Promise<QueueState>;
-    enqueue(task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null): Promise<number>;
+    enqueue(task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null, runAsBatch?: boolean): Promise<number>;
     estimate(task: AiTask, tier: AiTier, itemIds: string[], connectorId: string | null): Promise<BatchEstimate>;
     pause(): Promise<QueueState>;
     resume(): Promise<QueueState>;

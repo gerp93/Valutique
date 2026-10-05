@@ -79,3 +79,32 @@ export interface AiProvider {
   /** Cheap round-trip used by the Settings "Test connection" button. */
   test(connector: AiConnector): Promise<ConnectorTestResult>;
 }
+
+/** One request inside a provider batch submission, keyed so its result can be matched back to the job that asked for it. */
+export interface AiBatchRequestItem {
+  customId: string;
+  request: AiRequest;
+}
+
+/** One item's outcome once a batch has finished, matched back by `customId`. */
+export type AiBatchResult =
+  | { customId: string; ok: true; response: AiResponse }
+  | { customId: string; ok: false; message: string; retryable: boolean };
+
+/**
+ * Implemented only by providers whose API actually has an async batch
+ * endpoint (Anthropic to start). The registry hands this out separately from
+ * `AiProvider` -- most connectors (CLI tools, arbitrary OpenAI-compatible
+ * endpoints) have no such surface at all, so "can this connector batch" is a
+ * yes/no the caller checks rather than a method every provider must stub out.
+ */
+export interface AiBatchProvider {
+  /** Submits every request as one provider batch, returning the id the provider assigned to it. */
+  submitBatch(connector: AiConnector, items: AiBatchRequestItem[]): Promise<string>;
+  /** Cheap status check -- call this far less often than a normal poll, since batches resolve over minutes to a day. */
+  pollBatch(connector: AiConnector, providerBatchId: string): Promise<'in_progress' | 'ended'>;
+  /** Only meaningful once pollBatch reports 'ended'. One result per submitted item, in any order. */
+  fetchBatchResults(connector: AiConnector, providerBatchId: string): Promise<AiBatchResult[]>;
+  /** Best-effort cancel of an in-flight provider batch so Cancel All can stop billed work. */
+  cancelBatch(connector: AiConnector, providerBatchId: string): Promise<void>;
+}

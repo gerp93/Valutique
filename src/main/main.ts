@@ -93,6 +93,7 @@ let jobs: JobService;
 let settings: SettingsService;
 let usage: UsageService;
 let tasks: AiTasks;
+let registry: ProviderRegistry;
 let runner: JobRunner;
 let estimator: BatchEstimator;
 let importer: ImportService;
@@ -168,9 +169,9 @@ app.whenReady().then(async () => {
   settings = new SettingsService(db);
   usage = new UsageService(db, connectors);
 
-  const registry = new ProviderRegistry((connectorId) => connectors.getApiKey(connectorId));
+  registry = new ProviderRegistry((connectorId) => connectors.getApiKey(connectorId));
   tasks = new AiTasks(collections, fieldDefs, items, photos, appraisals, settings, registry);
-  estimator = new BatchEstimator(connectors, jobs, photos, settings);
+  estimator = new BatchEstimator(connectors, jobs, photos, settings, registry);
   duplicates = new DuplicateDetector(items);
   importer = new ImportService(collections, items, photos, settings, connectors, jobs, tasks);
 
@@ -180,6 +181,7 @@ app.whenReady().then(async () => {
     items,
     settings,
     tasks,
+    registry,
     (itemId) => {
       // Surfaced as a prompt rather than acted on: merging is the user's call,
       // and a false positive that auto-merged two real items would be far worse
@@ -594,9 +596,13 @@ function registerIpcHandlers() {
   ipcMain.handle('queue:getState', () => runner.getState());
   ipcMain.handle(
     'queue:enqueue',
-    (_, task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null) => {
+    (_, task: AiTask, tier: AiTier, itemIds: string[], collectionId: string | null, runAsBatch = false) => {
       const connector = connectors.resolveConnector(task, tier);
-      const created = jobs.enqueueMany(task, tier, itemIds, collectionId, connector?.id ?? null);
+      // Only actually batch when the connector's provider can -- a stale or
+      // mis-set flag from the renderer just falls back to a normal run rather
+      // than failing the whole enqueue.
+      const effectiveRunAsBatch = runAsBatch && Boolean(connector) && registry.batchFor(connector!) !== null;
+      const created = jobs.enqueueMany(task, tier, itemIds, collectionId, connector?.id ?? null, effectiveRunAsBatch);
       for (const id of itemIds) items.setAiStatus(id, 'queued');
       return created.length;
     }

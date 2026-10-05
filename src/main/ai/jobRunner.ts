@@ -1,11 +1,14 @@
-import { AiJob, CliLogEvent, QueueState } from '../../shared/types/job';
-import { AiTask } from '../../shared/types/connector';
+import { AiJob, AiBatch, CliLogEvent, QueueState } from '../../shared/types/job';
+import { AiConnector, AiTask } from '../../shared/types/connector';
 import { ConnectorService } from '../database/connectorService';
 import { ItemService } from '../database/itemService';
 import { JobService } from '../database/jobService';
 import { SettingsService } from '../database/settingsService';
 import { AiTasks } from './tasks';
+import { BATCH_COST_FACTOR } from './cost';
 import { AiAuthError, AiCapabilityError, AiError, AiRateLimitError } from './errors';
+import { ProviderRegistry } from './registry';
+import { AiBatchResult } from './types';
 
 /**
  * The queue worker.
@@ -19,6 +22,14 @@ import { AiAuthError, AiCapabilityError, AiError, AiRateLimitError } from './err
  */
 
 const POLL_INTERVAL_MS = 2000;
+
+/**
+ * How often submitted batches are actually checked against the provider.
+ * Batches resolve over minutes to a day, not seconds, so polling them on the
+ * same 2s cadence as the live queue would just waste calls -- this is
+ * overridden on every `start()` so a fresh launch always checks immediately.
+ */
+const BATCH_POLL_INTERVAL_MS = 60_000;
 
 /** Transient failures get a few tries with widening gaps before being called a failure. */
 const MAX_ATTEMPTS = 3;
@@ -41,6 +52,10 @@ export class JobRunner {
   private stopped = true;
   /** Log-so-far for every currently active job, keyed by job id, for a console panel opened mid-run. */
   private liveLogs = new Map<string, string[]>();
+  /** 0 forces a real poll on the first tick after every `start()`, including a fresh launch. */
+  private lastBatchPollAt = 0;
+  /** Prevents overlapping `tick()` calls from double-submitting the same `batch_queued` jobs. */
+  private tickInFlight = false;
 
   constructor(
     private jobs: JobService,
@@ -48,6 +63,7 @@ export class JobRunner {
     private items: ItemService,
     private settings: SettingsService,
     private tasks: AiTasks,
+    private registry: ProviderRegistry,
     private onIdentifyComplete: (itemId: string) => void,
     private onCliOutput: (event: CliLogEvent) => void
   ) {}
@@ -61,6 +77,10 @@ export class JobRunner {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    // Forces an immediate batch check rather than waiting out the poll
+    // interval -- the whole point of batch mode is that results can be
+    // sitting ready on the provider from before this launch.
+    this.lastBatchPollAt = 0;
     this.timer = setInterval(() => void this.tick(), POLL_INTERVAL_MS);
     void this.tick();
   }
@@ -98,15 +118,27 @@ export class JobRunner {
     for (const controller of this.active.values()) {
       controller.abort();
     }
-    const cancelled = this.jobs.cancelPending();
+    void this.cancelOpenBatches();
+    const { count, itemIds } = this.jobs.cancelPending();
+    // Cancelling the job alone leaves the item's status pill stuck on
+    // whatever it was ('queued', typically) forever -- nothing else resets
+    // it. 'none' is the same status a freshly-imported, never-processed item
+    // has; it only describes "no AI job in flight", not whether the item
+    // already has identify/appraise data from an earlier run.
+    for (const itemId of itemIds) this.items.setAiStatus(itemId, 'none');
     this.emit();
-    return cancelled;
+    return count;
   }
 
   getState(): QueueState {
     const counts = this.jobs.getCounts();
     const active = this.jobs.getActive();
     const pending = counts.queued + counts.running + counts.rate_limited;
+    // Waiting on a submitted provider batch is never "stalled" -- there is
+    // nothing local to retry, it resolves on the provider's own schedule --
+    // so it's tracked separately from the stall/ETA math below, which is
+    // about the live per-job queue.
+    const batchPending = counts.batch_queued + counts.batch_pending;
 
     // "Stalled" -- as opposed to a manual pause -- means every connector with
     // pending work is currently cooling down, so nothing at all can run right
@@ -115,7 +147,7 @@ export class JobRunner {
     const stalled = !this.paused && active.length === 0 && pending > 0 && !this.jobs.hasClaimable();
 
     return {
-      running: !this.stopped && pending > 0,
+      running: !this.stopped && (pending > 0 || batchPending > 0),
       paused: this.paused || stalled,
       pausedReason: this.paused ? 'Paused by you.' : stalled ? this.jobs.nextRateLimitReason() : null,
       resumesAt: this.paused ? null : this.jobs.nextEligibleAt(),
@@ -133,23 +165,265 @@ export class JobRunner {
   }
 
   private async tick(): Promise<void> {
-    if (this.stopped || this.paused) return;
+    if (this.stopped || this.tickInFlight) return;
+    this.tickInFlight = true;
 
-    const concurrency = this.settings.get().jobConcurrency;
-    const slots = concurrency - this.active.size;
-    if (slots <= 0) return;
+    try {
+      // Reconciling already-submitted batches runs even while manually paused --
+      // that pause is about starting new work, and a batch already sitting on
+      // the provider keeps running regardless. Submitting *new* batches is
+      // gated below with everything else "starting work" covers.
+      await this.reconcileBatches();
 
-    const claimable = this.jobs.claimable(slots);
-    if (claimable.length === 0) {
+      if (this.paused || this.stopped) return;
+
+      await this.submitBatches();
+
+      const concurrency = this.settings.get().jobConcurrency;
+      const slots = concurrency - this.active.size;
+      if (slots <= 0) return;
+
+      const claimable = this.jobs.claimable(slots);
+      if (claimable.length === 0) {
+        this.emit();
+        return;
+      }
+
+      for (const job of claimable) {
+        void this.run(job);
+      }
+
       this.emit();
+    } finally {
+      this.tickInFlight = false;
+    }
+  }
+
+  /**
+   * Bundles every currently `batch_queued` job into a provider batch
+   * submission, one submission per connector. Runs on the same tick as the
+   * live queue, but only actually calls the provider when there is something
+   * new to submit -- an empty group costs nothing but a DB query.
+   */
+  private async submitBatches(): Promise<void> {
+    const grouped = this.jobs.batchQueuedByConnector();
+
+    for (const [connectorId, jobsForConnector] of grouped) {
+      const connector = this.connectors.getById(connectorId);
+      if (!connector || !connector.enabled) {
+        this.failJobs(
+          jobsForConnector,
+          !connector
+            ? 'The connector for this batch is no longer available.'
+            : `"${connector.name}" is disabled, so this batch cannot be submitted.`
+        );
+        continue;
+      }
+
+      const batchProvider = this.registry.batchFor(connector);
+      // The checkbox that puts a job into batch_queued only appears for a
+      // batch-capable connector -- but the connector's provider could have
+      // changed since. Fail rather than leaving them stuck forever.
+      if (!batchProvider) {
+        this.failJobs(
+          jobsForConnector,
+          `"${connector.name}" can no longer run as a batch.`
+        );
+        continue;
+      }
+
+      // Phase 1: only appraise is wired up to batch mode.
+      const appraiseJobs = jobsForConnector.filter((job) => job.task === 'appraise' && job.itemId);
+      if (appraiseJobs.length === 0) continue;
+
+      try {
+        const items = await Promise.all(
+          appraiseJobs.map(async (job) => ({
+            customId: job.id,
+            request: await this.tasks.buildAppraiseRequest(job.itemId!, job.tier, connector),
+          }))
+        );
+
+        const providerBatchId = await batchProvider.submitBatch(connector, items);
+        const batch = this.jobs.createBatch(connector.provider, connector.id, providerBatchId);
+        this.jobs.markJobsBatchPending(
+          appraiseJobs.map((job) => job.id),
+          batch.id
+        );
+        // Cancel during the await above leaves jobs cancelled; claiming is a
+        // no-op then, so drop the provider batch we just paid to create.
+        if (this.jobs.getJobsForBatch(batch.id).length === 0) {
+          try {
+            await batchProvider.cancelBatch(connector, providerBatchId);
+          } catch (err) {
+            console.error(`Failed to cancel unused provider batch ${batch.id}:`, err);
+          }
+          this.jobs.updateBatchStatus(batch.id, 'failed');
+          continue;
+        }
+        this.emit();
+      } catch (err) {
+        // Couldn't even submit the batch -- fail every job in the group
+        // rather than leaving them stuck in batch_queued forever. Unlike the
+        // normal queue, nothing polls that status looking for retries.
+        const error = err instanceof AiError ? err : new AiError(err instanceof Error ? err.message : String(err), true);
+        this.failJobs(appraiseJobs, error.message);
+      }
+    }
+  }
+
+  /**
+   * Checks every open batch against the provider, and applies results for
+   * any that have finished. Throttled to `BATCH_POLL_INTERVAL_MS` -- a batch
+   * resolves over minutes to a day, so polling it every 2s like the live
+   * queue would just burn calls -- except right after `start()`, which always
+   * checks immediately since the app may have been closed when a batch
+   * actually finished.
+   */
+  private async reconcileBatches(): Promise<void> {
+    const nowMs = Date.now();
+    if (this.lastBatchPollAt !== 0 && nowMs - this.lastBatchPollAt < BATCH_POLL_INTERVAL_MS) return;
+    this.lastBatchPollAt = nowMs;
+
+    const open = this.jobs.getOpenBatches();
+    for (const batch of open) {
+      const connector = batch.connectorId ? this.connectors.getById(batch.connectorId) : null;
+      const batchProvider = connector ? this.registry.batchFor(connector) : null;
+      if (!connector || !batchProvider) {
+        this.failUnreachableBatch(
+          batch,
+          !batch.connectorId || !connector
+            ? 'The connector for this batch is no longer available, so results cannot be retrieved.'
+            : 'This connector can no longer run batches, so results cannot be retrieved.'
+        );
+        continue;
+      }
+
+      try {
+        const status = await batchProvider.pollBatch(connector, batch.providerBatchId);
+        if (status !== 'ended') {
+          this.jobs.updateBatchStatus(batch.id, 'in_progress');
+          continue;
+        }
+
+        const results = await batchProvider.fetchBatchResults(connector, batch.providerBatchId);
+        const byCustomId = new Map(results.map((result) => [result.customId, result]));
+
+        for (const job of this.jobs.getJobsForBatch(batch.id)) {
+          const result = byCustomId.get(job.id);
+          if (!result) {
+            this.markBatchJobFailed(job, 'No result came back for this item in the batch.');
+            continue;
+          }
+          await this.applyBatchResult(job, connector, result);
+        }
+
+        this.jobs.updateBatchStatus(batch.id, 'ended');
+        this.emit();
+      } catch (err) {
+        // A transient failure checking one batch shouldn't stop the others
+        // from being reconciled, or crash the tick -- it just stays
+        // 'submitted'/'in_progress' and is tried again on the next poll.
+        console.error(`Failed to poll batch ${batch.id}:`, err);
+      }
+    }
+  }
+
+  private async applyBatchResult(job: AiJob, connector: AiConnector, result: AiBatchResult): Promise<void> {
+    // Re-read: a prior apply, a retry, or Cancel All may have moved this row
+    // off `batch_pending` since the poll started.
+    const current = this.jobs.getById(job.id);
+    if (!current || current.status !== 'batch_pending') return;
+
+    if (!current.itemId) {
+      this.jobs.markFailed(current.id, 'Batch job has no item.');
       return;
     }
 
-    for (const job of claimable) {
-      void this.run(job);
+    if (!result.ok) {
+      // Batch items don't get the live queue's backoff-and-retry treatment --
+      // re-submitting means waiting on another full batch round-trip, so a
+      // failure is surfaced immediately. The existing "Retry" action on a
+      // failed job re-queues it as a normal (non-batch) run, which is the
+      // more sensible next step for a single leftover item anyway.
+      this.markBatchJobFailed(current, result.message);
+      return;
     }
 
+    try {
+      // Duration is provider-call length for live jobs and feeds ETA averages.
+      // A batch may sit for hours, so enqueue-to-apply would poison those
+      // averages; there is no accurate provider runtime on the row either.
+      //
+      // shouldApply is re-checked by applyAppraiseResponse immediately before
+      // it writes the appraisal -- comp verification in there can make a real
+      // network call, so a Cancel All landing after the check above but
+      // before that write still needs to be caught right at the write itself.
+      const outcome = await this.tasks.applyAppraiseResponse(
+        current.itemId,
+        current.tier,
+        connector,
+        result.response,
+        Date.now(),
+        () => this.jobs.getById(current.id)?.status === 'batch_pending'
+      );
+
+      // markDone itself refuses to resurrect a cancelled row (see JobService)
+      // -- only reflect "done" on the item when it actually took effect.
+      if (this.jobs.markDone(current.id, {
+        tokensIn: outcome.tokensIn,
+        tokensOut: outcome.tokensOut,
+        webSearches: outcome.webSearches,
+        costEstimate: outcome.costEstimate == null ? null : outcome.costEstimate * BATCH_COST_FACTOR,
+        durationMs: null,
+      })) {
+        // No afterSuccess() equivalent needed here: that hook only chains
+        // identify -> appraise and feeds duplicate detection, both scoped to
+        // the identify task. Batch mode only covers appraise so far.
+        this.items.setAiStatus(current.itemId, 'done');
+      }
+    } catch (err) {
+      const error = err instanceof AiError ? err : new AiError(err instanceof Error ? err.message : String(err), true);
+      this.markBatchJobFailed(current, error.message);
+    }
+  }
+
+  private failUnreachableBatch(batch: AiBatch, message: string): void {
+    this.failJobs(this.jobs.getJobsForBatch(batch.id), message);
+    this.jobs.updateBatchStatus(batch.id, 'failed');
+  }
+
+  /** Only reflects the failure on the item when the job row actually changed -- see JobService.markFailed. */
+  private failJobs(jobs: AiJob[], message: string): void {
+    for (const job of jobs) {
+      const applied = this.jobs.markFailed(job.id, message);
+      if (applied && job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
+    }
     this.emit();
+  }
+
+  /** Best-effort provider cancel so Cancel All actually stops billed batch work. */
+  private async cancelOpenBatches(): Promise<void> {
+    for (const batch of this.jobs.getOpenBatches()) {
+      if (batch.connectorId) {
+        const connector = this.connectors.getById(batch.connectorId);
+        const batchProvider = connector ? this.registry.batchFor(connector) : null;
+        if (connector && batchProvider) {
+          try {
+            await batchProvider.cancelBatch(connector, batch.providerBatchId);
+          } catch (err) {
+            console.error(`Failed to cancel provider batch ${batch.id}:`, err);
+          }
+        }
+      }
+      this.jobs.updateBatchStatus(batch.id, 'failed');
+    }
+  }
+
+  /** No-ops on the item if the job was already cancelled -- see JobService.markFailed. */
+  private markBatchJobFailed(job: AiJob, message: string): void {
+    const applied = this.jobs.markFailed(job.id, message);
+    if (applied && job.itemId) this.items.setAiStatus(job.itemId, 'error', message);
   }
 
   private async run(job: AiJob): Promise<void> {

@@ -36,7 +36,8 @@ export default function QueueBar() {
   if (!state) return null;
 
   const { counts } = state;
-  const pending = counts.queued + counts.running + counts.rate_limited;
+  const pending =
+    counts.queued + counts.running + counts.rate_limited + counts.batch_queued + counts.batch_pending;
   const finished = counts.done;
   const total = pending + finished;
 
@@ -204,6 +205,7 @@ function describeStatus(state: QueueState, pending: number): string {
   if (pending === 0) return `${state.counts.failed} failed`;
   if (state.paused) return 'Paused';
   if (state.counts.running > 0) return `Working on ${state.counts.running}`;
+  if (state.counts.batch_pending > 0) return 'Waiting on batch';
   return 'Queued';
 }
 
